@@ -1,0 +1,45 @@
+{
+  "milestone": "m1",
+  "tasks": [
+    {
+      "id": "M1-001",
+      "title": "Data model of the core entities",
+      "agent": "builder",
+      "reviewer": "evaluator",
+      "description": "Goal: the entities of docs/spec.md section 3 with validation at construction. Out of scope: persistence. Done when every entity rejects invalid input with an error naming the field and the fix, and the tests cover each rule. Pitfall: no silent defaults for physically meaningful fields.",
+      "spec_refs": ["docs/spec.md#3-data-model"],
+      "depends_on": [],
+      "acceptance": [
+        {"pytest": ["tests/test_model.py"], "min_passed": 8}
+      ],
+      "review": true
+    },
+    {
+      "id": "M1-G1",
+      "title": "Gate G1: owner decisions and review of the data model",
+      "agent": "owner-gate",
+      "description": "Owner steps: (1) answer the open questions raised by M1-001; (2) review the error messages of the data model; (3) pass the gate with 'python harness/owner_tools.py pass_gate task=M1-G1'.",
+      "depends_on": ["M1-001"]
+    },
+    {
+      "id": "M1-002",
+      "title": "Serialisation of the data model",
+      "agent": "builder",
+      "description": "Goal: read and write the model as JSON, round trip exact. Out of scope: versioning. Done when every entity round-trips and a malformed file gives an error naming the path in the file.",
+      "spec_refs": ["docs/spec.md#4-files"],
+      "depends_on": ["M1-G1"],
+      "acceptance": [
+        {"pytest": ["tests/test_io.py"], "min_passed": 5}
+      ],
+      "review": true
+    },
+    {
+      "id": "M1-G2",
+      "title": "Gate G2: end of milestone",
+      "agent": "owner-gate",
+      "final": true,
+      "description": "Owner steps: ratify or override the provisional decisions; review the milestone; merge the branch into main.",
+      "depends_on": ["M1-002"]
+    }
+  ]
+}

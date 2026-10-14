@@ -1,0 +1,20 @@
+# Working material tied to specific projects: kept locally, never published
+/private/
+
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+.venv/
+
+# Viewer build output (python viewer/build.py)
+/viewer/build/
+/viewer/dist/
+*.spec
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

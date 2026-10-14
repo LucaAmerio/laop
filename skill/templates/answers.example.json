@@ -1,0 +1,39 @@
+{
+  "_doc": "Answers of the /laop init interview, consumed by tools/laop.py init. Every key but name is optional; missing keys take the defaults shown in tools/laop.py.",
+  "name": "Atlas",
+  "prefix": "ATLAS",
+  "owner_language": "English",
+  "purpose": "Atlas is a Python library that reads, validates and converts geospatial survey files. Its primary user is another LLM agent.",
+  "owner_profile": "The owner is a domain expert who reviews the decisions on file formats and validates results against a reference desktop program. The owner is not a software engineer.",
+  "platform": "windows",
+  "interpreters": {
+    "python": [".venv/Scripts/python.exe", ".venv/bin/python"],
+    "python-reference": [".venv-reference/Scripts/python.exe", ".venv-reference/bin/python"]
+  },
+  "global_checks": [
+    {"cmd": ["python", "-m", "ruff", "check", "."]},
+    {"pytest": ["-m", "not reference and not slow", "-n", "8"], "allow_empty": true, "min_passed": 0}
+  ],
+  "open_questions": "docs/open_questions.md",
+  "builder_paths": ["src/atlas/**", "tests/unit/**", "tests/integration/**", "docs/adr/**", "examples/**"],
+  "builder_deny": ["src/atlas/data/**"],
+  "read_only_docs": ["docs/spec.md", "docs/conventions.md"],
+  "lockable": [{"dir": "validation/cases", "marker": "LOCKED"}],
+  "protected_paths": [],
+  "external_programs": [
+    {"name": "ReferenceGIS", "agents": ["reference-runner"], "reminder": "The reference program needs its licence server: check that it is reachable."}
+  ],
+  "integrity_paths": [".venv/Lib/site-packages"],
+  "ntfy_topic": null,
+  "resolver_mode": "advise",
+  "north_star": "A converter that is complete, correct, with clear errors, and free of traps for an LLM user.",
+  "principles": [
+    "Never lose or silently alter data: a value that cannot be converted is an error, not a default.",
+    "Correctness first, then clear errors, then completeness.",
+    "Early-stage project: no backward compatibility.",
+    "Wrong decisions are corrected, not perpetuated.",
+    "A clear 'not yet supported' error with the extension planned is a phase, not a limitation."
+  ],
+  "owner_knows": "The file formats, the survey practice and how the reference program behaves.",
+  "owner_delegates": "Implementation choices (parsing strategy, internal data structures, performance techniques)."
+}
