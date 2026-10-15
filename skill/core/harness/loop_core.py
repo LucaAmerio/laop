@@ -1013,12 +1013,22 @@ def drain_owner_queue(doc: dict, state: dict) -> list[str]:
     return results
 
 
-def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
-    """Apply one owner action to the state; return a one-line result."""
+TASK_ACTIONS = ("pass_gate", "unblock", "resume", "foreign_commit", "allow_path")
+
+
+def owner_action_problem(doc: dict, state: dict, a: dict) -> str:
+    """'' when the owner action ``a`` can be applied to ``state``, else why not (one line).
+
+    owner_tools checks it before queueing or applying, so that a malformed action is refused at
+    once instead of being reported as applied and dropped later by the step script."""
     action, task_id = a.get("action"), a.get("task_id")
-    needs_task = action in ("pass_gate", "unblock", "resume", "foreign_commit", "allow_path")
-    if needs_task and task_id not in state["tasks"]:
-        return f"{action}: unknown task id {task_id!r}."
+    if action not in OWNER_ACTIONS:
+        return f"Unknown action {action!r}."
+    if action in TASK_ACTIONS:
+        if not task_id:
+            return f"{action}: set task=<task id>."
+        if task_id not in state["tasks"] or not any(t["id"] == task_id for t in doc["tasks"]):
+            return f"{action}: unknown task id {task_id!r}."
     if action == "pass_gate":
         task = task_by_id(doc, task_id)
         if task["agent"] != GATE:
@@ -1026,6 +1036,48 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
         if task.get("final") and open_provisional(state):
             return (f"{task_id} is the final gate: ratify or override the provisional decisions first "
                     f"({', '.join(sorted(open_provisional(state)))}).")
+    elif action in ("owner_commit", "foreign_commit"):
+        if not a.get("commit"):
+            return f"{action}: set commit=<sha>."
+        try:
+            git("rev-parse", "--verify", f"{a['commit']}^{{commit}}")
+        except LoopError:
+            return f"{action}: {a['commit']!r} is not a commit of this repository."
+    elif action == "allow_path":
+        if not a.get("path"):
+            return "allow_path: set path=<relative path>."
+    elif action in ("ratify", "override"):
+        qid = a.get("qid")
+        if not qid:
+            return f"{action}: set qid=<question key>."
+        prov = state.get("provisional", {}).get(qid)
+        if not prov or prov.get("status") != "open":
+            return f"{action}: no open provisional decision {qid!r}."
+    elif action == "decide":
+        qid, verdict = a.get("qid"), a.get("verdict")
+        if not qid:
+            return "decide: set qid=<question key>."
+        q = state.get("questions", {}).get(qid)
+        if not q or q.get("status") != "open":
+            return f"decide: no question {qid!r} waits for a decision (see 'status')."
+        if verdict not in DECIDE_VERDICTS:
+            return f"decide: verdict must be one of {'|'.join(DECIDE_VERDICTS)}."
+        if verdict in ("amend", "differ") and not (a.get("note") or "").strip():
+            return f"decide: verdict {verdict} needs note=\"the owner's decision\"."
+    elif action == "trust":
+        if not a.get("category") or a.get("level") not in TRUST_LEVELS:
+            return f"trust: set category=<R or D id> and level={'|'.join(TRUST_LEVELS)}."
+    return ""
+
+
+def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
+    """Apply one owner action to the state; return a one-line result."""
+    action, task_id = a.get("action"), a.get("task_id")
+    problem = owner_action_problem(doc, state, a)
+    if problem:
+        return problem
+    if action == "pass_gate":
+        task = task_by_id(doc, task_id)
         open_deps = [d for d in task.get("depends_on", []) if state["tasks"][d]["status"] != "done"]
         mark_done(state, task, "gate passed by the owner"
                   + (f" before {', '.join(open_deps)} were done" if open_deps else ""))
@@ -1038,8 +1090,6 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
         state["tasks"][task_id].update(status="todo", blocked_reason="")
         event(state, f"owner resumed {task_id} (base kept)")
     elif action in ("owner_commit", "foreign_commit"):
-        if not a.get("commit"):
-            return f"{action}: set COMMIT."
         sha = git("rev-parse", "--verify", f"{a['commit']}^{{commit}}")
         target = (state.setdefault("owner_commits", []) if action == "owner_commit"
                   else state["tasks"][task_id].setdefault("foreign_commits", []))
@@ -1047,8 +1097,6 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
             target.append(sha)
         event(state, f"{action} recorded: {sha}" + (f" for {task_id}" if task_id else ""))
     elif action == "allow_path":
-        if not a.get("path"):
-            return "allow_path: set PATH."
         allowed = state["tasks"][task_id].setdefault("allowed_paths", [])
         if a["path"] not in allowed:
             allowed.append(a["path"])
@@ -1093,9 +1141,7 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
     elif action == "decide":
         return decide(state, a)
     elif action == "trust":
-        cat, level = (a.get("category") or "").upper(), a.get("level")
-        if not cat or level not in TRUST_LEVELS:
-            return f"trust: set category=<R or D id> and level={'|'.join(TRUST_LEVELS)}."
+        cat, level = a["category"].upper(), a["level"]
         e = ledger_entry(state, cat)
         e.update(status=level, streak=0)
         event(state, f"owner set category {cat} to {level}")

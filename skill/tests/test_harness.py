@@ -378,6 +378,51 @@ class LoopTests(HarnessTest):
         self.assertIn("applied", out)
         self.assertEqual(r.state()["tasks"]["G1"]["status"], "done")
 
+    def test_owner_action_with_bad_arguments_is_refused_not_queued(self):
+        r = self.r
+        r.tasks([task(), {"id": "G1", "title": "g", "agent": "owner-gate", "description": "x"}])
+        cases = [
+            (["pass_gate"], "set task="),
+            (["pass_gate", "task=NOPE"], "unknown task id 'NOPE'"),
+            (["pass_gate", "task=M1-001"], "not a gate"),
+            (["unblock"], "set task="),
+            (["resume", "task=NOPE"], "unknown task id"),
+            (["allow_path", "task=M1-001"], "set path="),
+            (["foreign_commit", "task=M1-001"], "set commit="),
+            (["owner_commit", "commit=deadbeef"], "not a commit"),
+            (["ratify"], "set qid="),
+            (["override", "qid=Q9"], "no open provisional decision"),
+            (["decide", "qid=Q9", "verdict=agree"], "no question"),
+            (["trust", "category=R1", "level=nope"], "trust: set"),
+        ]
+        for in_flight in (False, True):
+            if in_flight:
+                r.step("step_next")
+            for args, expected in cases:
+                with self.subTest(args=args, in_flight=in_flight):
+                    proc = subprocess.run([sys.executable, str(r.root / "harness" / "owner_tools.py"), *args],
+                                          cwd=r.root, capture_output=True, text=True, env=r.env, timeout=60)
+                    self.assertEqual(proc.returncode, 1, proc.stdout)
+                    self.assertIn("REFUSED", proc.stdout)
+                    self.assertIn(expected, proc.stdout)
+                    self.assertNotIn("applied.", proc.stdout)
+                    queue = json.loads((r.root / "harness" / "owner_queue.json").read_text()) \
+                        if (r.root / "harness" / "owner_queue.json").exists() else {}
+                    self.assertEqual(queue.get("actions", []), [])
+        self.assertNotEqual(r.state()["tasks"]["G1"]["status"], "done")
+
+    def test_owner_action_refused_by_the_step_is_not_reported_applied(self):
+        # the check passes, then the state changes before the step applies the action
+        r = self.r
+        r.tasks([task(), {"id": "G1", "title": "g", "agent": "owner-gate", "description": "x"}])
+        r.step("step_next")
+        self.assertIn("queued", r.owner("unblock", "task=G1"))
+        r.commit_file("harness/tasks.json", json.dumps({"milestone": "m1", "tasks": [task()]}), "replan")
+        r.set_state(lambda s: s.update(current=None))
+        out = r.owner("clear_halt")
+        self.assertIn("REFUSED", out)
+        self.assertIn("unknown task id 'G1'", out)
+
     def test_check_budget(self):
         r = self.r
         pj = json.loads((r.root / "harness" / "project.json").read_text())

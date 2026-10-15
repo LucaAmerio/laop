@@ -8,6 +8,12 @@
 - `harness/state.json` keeps the last 10000 events instead of 50.
 - `max_iterations` counts the dispatches of the current run: the counter starts from zero every
   time the loop starts (after a finish, a stop, a halt or a gate), not once per milestone.
+- `owner_tools.py` checks an action before queueing or applying it: a missing or unknown `task=`,
+  a `pass_gate` on a task that is not a gate, a missing `commit=`/`path=`/`qid=`, a `qid` with no
+  open provisional decision or question, a bad `verdict` or `trust` level are refused at once
+  (`REFUSED: ...`, exit code 1, nothing queued). Before, `pass_gate` without `task=` printed
+  "pass_gate applied." and the step script dropped it later ("owner action not applied"). An
+  action the step script still refuses is reported as refused, not as applied.
 
 ## 0.4.0 (2026-10-14)
 

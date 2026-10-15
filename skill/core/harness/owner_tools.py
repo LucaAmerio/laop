@@ -57,6 +57,9 @@ import loop_core as L  # noqa: E402
 import statefile  # noqa: E402
 
 
+REFUSED = "REFUSED:"
+
+
 def parse(argv: list[str]) -> dict:
     entry: dict = {"action": argv[0] if argv else "status"}
     for arg in argv[1:]:
@@ -108,7 +111,11 @@ def run(entry: dict) -> str:
                 statefile.write(L.STATE_FILE, {"ledger": ledger})
         return f"state archived to {target}" + (" (resolver trust ledger kept)" if ledger else "")
     if action not in L.OWNER_ACTIONS:
-        return f"Unknown action {action!r}. Run without arguments for help."
+        return f"{REFUSED} unknown action {action!r}. Run without arguments for help."
+    doc = L.load_tasks()
+    problem = L.owner_action_problem(doc, L.load_state(doc), entry)
+    if problem:
+        return f"{REFUSED} {problem} Nothing queued. Run without arguments for help."
     if action == "release":
         # orchestrator_session belongs to the hooks: cleared directly, under the state lock
         statefile.update(L.STATE_FILE, lambda s: s.update(orchestrator_session=None))
@@ -120,14 +127,22 @@ def run(entry: dict) -> str:
     if in_flight:
         return (f"{action} queued: a task is in flight; the next step script applies it. "
                 "Run 'status' to check.")
+    seen = len(statefile.read(L.STATE_FILE).get("events", []))
     try:
         with L.step() as (doc, state, _digest):
             pass  # step() applied the queue and saved the state
     except L.LoopError as exc:
         return f"{action} queued, not applied yet ({exc})."
+    # the state may have changed since the check above: report what the step refused
+    new_events = state["events"][seen:] if seen < len(state["events"]) else []
+    failed = [e for e in new_events if "owner action not applied:" in e]
+    if failed:
+        return f"{REFUSED} {action} not applied.\n" + "\n".join(failed)
     return f"{action} applied.\n" + "\n".join(state["events"][-3:])
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    print(run(parse(sys.argv[1:])))
+    out = run(parse(sys.argv[1:]))
+    print(out)
+    sys.exit(1 if out.startswith(REFUSED) else 0)
