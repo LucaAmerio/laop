@@ -50,7 +50,7 @@ DEFAULTS: dict = {
     # (as advise, and the question is decided provisionally when its category of the principles
     # file is autonomous: delegated categories after a warm-up of `warmup` agreed answers).
     # Refuse to start the loop unless docs/spec.md, docs/plan/roadmap.md and the milestone's brief
-    # are approved by the owner (harness/approvals.py). init sets it; adopted projects opt in.
+    # are approved by the owner (harness/approvals.py). init sets it; upgraded projects opt in.
     "require_brief": False,
     "resolver": {"mode": "off", "max_per_run": 5, "max_per_task": 2, "warmup": 3},
 }
