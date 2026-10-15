@@ -4,7 +4,7 @@
 
 - The loop command is `/laop-start` in every project (it was `/<name>-loop`, set by
   `loop_command`). `loop_command` is gone from the answers and `project.json`; `upgrade` drops it
-  and removes the old `.claude/commands/<name>-loop.md`.
+  and removes the old `.claude/commands/<name>-loop.md`, `adopt` replaces the old command file.
 - `harness/state.json` keeps the last 10000 events instead of 50.
 - `max_iterations` counts the dispatches of the current run: the counter starts from zero every
   time the loop starts (after a finish, a stop, a halt or a gate), not once per milestone.
@@ -35,7 +35,7 @@ Before the plan: what to build, and what each milestone means (decided with the 
   a new approval; a document with a marker or a placeholder cannot be approved.
 - `owner_tools.py lint` (and the loop start) warn about a milestone planned without approved spec,
   roadmap and brief. With `"require_brief": true` in `project.json` `step_next.py` refuses to start
-  the loop. New installs set it; upgraded projects keep it off until they opt in.
+  the loop. New installs set it; upgraded and adopted projects keep it off until they opt in.
 - Planner: checks the approvals first and refuses to plan without them; cannot write spec, roadmap
   or briefs (`deny_write`); puts the brief's owner decisions into the first gate and covers every
   exit criterion. `doctor` reports the approvals and the next step.
@@ -69,7 +69,7 @@ Upgrading from 0.3.x (manual, config files are the owner's):
   how many items wait for the owner. The "+" tab asks for the path of a repository (and lists the
   ones with a task loop found nearby); x stops watching one. The list lives in
   `~/.laop/viewer.json` (`config=` for another), so any viewer, started from any repository, shows
-  them all.
+  them all; a repository on the legacy pre-laop harness shows too.
 - Viewer: gates are drawn as gold hexagons labelled OWNER GATE (dashed while not reached, green
   once passed), marked in the task table and in the chips.
 - Viewer: questions waiting for `decide` (0.3.0) show the recommendation and the three decide
@@ -82,7 +82,7 @@ Upgrading from 0.3.x (manual, config files are the owner's):
 
 Resolver with growing trust (decided with the owner).
 
-- `resolver.mode`: `off`, `advise` (default for new projects: every question reaches
+- `resolver.mode`: `off`, `advise` (default for new and adopted projects: every question reaches
   the owner with a recommendation prepared by the resolver and attacked by the challenger), `auto`
   (as advise, and questions of autonomous categories are decided provisionally). The old
   `"enabled": true` reads as `auto`.
@@ -149,6 +149,16 @@ Found in the first real project.
   notifications.
 - Guard: loop roles may not run `harness/viewer.py`.
 
+## 0.2.0 (2026-10-12)
+
+- `laop.py adopt`: installs laop over a repository that runs the legacy pre-laop harness, between
+  milestones. Converts loop_config.py into project.json (interpreters including the oracle venv
+  and portable Node, global checks, limits, ntfy, locked case directories, protected sibling
+  repository, external programs), roles.json (core roles removed, dispatch and reviewer flags),
+  the oracle checks of tasks.json; keeps agents, CLAUDE.md, permissions and state.json (with a
+  backup); lists the old harness tests and the CLAUDE.md changes to make. Tested on copies of
+  two legacy repositories.
+
 ## 0.1.4 (2026-10-12)
 
 - Messages from other Claude sessions (`<cross-session-message ...>`), side-session and CI events
@@ -167,7 +177,8 @@ Found by the first complete sandbox loop.
   subagent return released the orchestrator binding, so the following step scripts and the
   review, resolver and challenger spawns ran as owner, without the dispatch check, until the next
   step_next. The hook now ignores subagent reports, task notifications and Stop hook feedback,
-  and logs the start of each prompt that releases the binding.
+  and logs the start of each prompt that releases the binding. (The legacy harness has the
+  same hook.)
 - Challenger verdict `AMEND`: the same decision with mandatory implementation refinements within
   the delegated scope; the task resumes with decision and amendments. `COUNTER` is kept for a
   different decision and still escalates. Before, a challenger that agreed on the policy but fixed
@@ -195,7 +206,7 @@ Found by the first real loop (sandbox).
 
 ## 0.1.0 (2026-10-12)
 
-First version.
+First version, consolidated from the legacy pre-laop harness (2026-10-09) and its fork.
 
 - Core, rendered and config files separated; project settings in `harness/project.json`
   (interpreters, global checks, limits, lockable and protected paths, external programs,

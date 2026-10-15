@@ -1,6 +1,6 @@
 ---
 name: laop
-description: Install, define what to build (discover: requirements and milestones of a new idea or an existing spec; brief: what one milestone means, before planning it), upgrade, extend, check or backtest (measure the resolver on past decisions) the laop task-loop harness in a repository, the agent loop where an orchestrator session dispatches builder and reviewer subagents task by task under a guard hook, with owner gates and a resolver that answers non-decisional open questions. Use when the user asks to set up the agent loop or harness in a new project ("/laop init", "set up the loop", "install the harness"), to upgrade it ("/laop upgrade"), to add a loop role ("/laop add-role"), or to check it ("/laop doctor", "is the guard active?"). Also when the owner has an idea to build with the loop, or a milestone to start ("/laop discover", "/laop brief m2", "what should m2 do?").
+description: Install, adopt (migrate from the legacy pre-laop harness), define what to build (discover: requirements and milestones of a new idea or an existing spec; brief: what one milestone means, before planning it), upgrade, extend, check or backtest (measure the resolver on past decisions) the laop task-loop harness in a repository, the agent loop where an orchestrator session dispatches builder and reviewer subagents task by task under a guard hook, with owner gates and a resolver that answers non-decisional open questions. Use when the user asks to set up the agent loop or harness in a new project ("/laop init", "set up the loop", "install the harness"), to upgrade it ("/laop upgrade"), to add a loop role ("/laop add-role"), or to check it ("/laop doctor", "is the guard active?"). Also when the owner has an idea to build with the loop, or a milestone to start ("/laop discover", "/laop brief m2", "what should m2 do?").
 ---
 
 # laop: the task-loop harness
@@ -130,6 +130,40 @@ Mandatory before the planner runs (`require_brief`); its cost scales with the un
    scope of the milestone, the roadmap is updated by the analyst and approved again too.
 5. Next: milestone branch, planner, review of `tasks.json`, loop. The brief's "Owner decisions"
    become the first gate.
+
+## Mode: adopt (a repository that runs the legacy pre-laop harness)
+
+For repositories with `harness/loop_core.py` and `.claude/hooks/guard.py` but no
+`harness/core.lock.json`.
+
+1. **When.** Only between milestones: the previous milestone finished and merged, no task in flight,
+   no loop active (`adopt` refuses otherwise). Ask the owner to confirm, and to stop any loop session
+   of that repository.
+2. **Preconditions.** Clean working tree; a dedicated branch (`git switch -c laop-adopt`). Run the
+   skill tests once.
+3. **Run:** `python <skill>/tools/laop.py adopt <repo> [principles=<file>]`. It reads the previous
+   configuration by importing the old `loop_config`, `pathrules` and `loop_core`, then:
+   - writes `harness/project.json` (name from the old command file; interpreters,
+     global checks, limits, ntfy from `loop_config`; locked case directories, the protected sibling
+     repository and the external programs from the old code);
+   - converts `harness/roles.json` (core roles removed; `dispatch` for the old `VALID_AGENTS`,
+     `reviewer` for the old reviewers) and the old `"python": "oracle"` checks of `tasks.json`;
+   - replaces the core files, renders the loop command `/laop-start` (the old `/<name>-loop` file
+     is removed) and the hooks block, keeps the
+     project's agents, CLAUDE.md and permissions;
+   - keeps `state.json` (binding cleared; a backup goes to `harness/logs/`).
+4. **Act on every ACTION REQUIRED line**, with the owner (and offer `/laop discover` in import mode
+   for the existing specification, plus `/laop brief` before the next milestone):
+   - remove the tests of the previous harness it lists (they would fail every global check);
+   - update CLAUDE.md: the claim's `question_id` and `block_type`, `owner_tools.py` with arguments,
+     and the resolver if it will be enabled;
+   - write `docs/owner_principles.md`, or pass an existing file with `principles=`;
+   - check the project's own agents for references to the old harness (`harness/MAIN_ROLE`, the
+     `ACTION =` block of owner_tools).
+5. Run doctor, show the diff, commit with the owner's approval (`laop: adopt <version>`), restart the
+   session, check "guard active", then run one small task before a whole milestone.
+6. Rollback: every harness file is tracked, so `git revert` of the adoption commit, plus the
+   state backup copied back to `harness/state.json`.
 
 ## Mode: backtest (measure the resolver on questions the owner already decided)
 
