@@ -201,6 +201,12 @@ def lock_entries(repo: Path) -> list[str]:
     return list(json.loads(path.read_text(encoding="utf-8"))["files"]) if path.exists() else []
 
 
+def upgrade_pending(lock: dict) -> list[str]:
+    """Core files of this skill that differ from the ones installed (by the lock's digests): an
+    upgrade has something to do even when the version is the same (unreleased changes)."""
+    return [f for f in core_files() if lock["files"].get(f) != digest_file(CORE / f)]
+
+
 def drift(repo: Path) -> list[str]:
     path = repo / LOCK_REL
     if not path.exists():
@@ -415,6 +421,10 @@ def doctor(repo: Path) -> int:
         return 1
     lock = json.loads((repo / LOCK_REL).read_text(encoding="utf-8"))
     notes.append(f"installed laop {lock.get('version')}, skill laop {VERSION}")
+    stale = upgrade_pending(lock)
+    if stale:
+        notes.append(f"UPGRADE AVAILABLE: {len(stale)} core file(s) differ from this skill's "
+                     f"({', '.join(stale[:5])}{', ...' if len(stale) > 5 else ''}); see /laop upgrade")
     for entry in drift(repo):
         problems.append(f"modified locally: {entry}")
     try:

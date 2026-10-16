@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `doctor` reports `UPGRADE AVAILABLE` when the installed core files differ from the skill's, also
+  at the same version (unreleased changes). `/laop brief` runs doctor first and upgrades before the
+  milestone when it does.
+
 - Findings are kept per task in `harness/findings/<task>.md`, a section per rejected attempt,
   appended and never overwritten (`harness/NEXT_FINDINGS.md`, one file for the whole loop, is
   only read for a task that has no findings file yet). Before, a rejection overwrote the findings

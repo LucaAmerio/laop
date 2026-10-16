@@ -117,6 +117,9 @@ Subagents cannot talk to the owner: **you run the interview**, the `analyst` sub
 
 Mandatory before the planner runs (`require_brief`); its cost scales with the uncertainty.
 
+0. **Upgrade first.** `python <skill>/tools/laop.py doctor <repo>`: if it reports `UPGRADE
+   AVAILABLE`, run mode upgrade before the brief (no task is in flight between milestones), so the
+   milestone runs on the current harness.
 1. **Draft first.** Spawn the `analyst` in mode brief for milestone `<m>`, with any notes the owner
    gave. It fills the brief from the roadmap, the code, ADRs, decided questions and earlier
    milestones, and returns the coverage table and its markers.

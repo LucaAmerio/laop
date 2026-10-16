@@ -703,6 +703,14 @@ class BriefTests(unittest.TestCase):
                              text=True, timeout=120).stdout
         self.assertIn("approvals: docs/spec.md: missing", out)
         self.assertIn("next: /laop discover", out)
+        self.assertNotIn("UPGRADE AVAILABLE", out)
+        lock = r.root / "harness" / "core.lock.json"
+        data = json.loads(lock.read_text())
+        data["files"]["harness/loop_core.py"] = "older"  # installed from an earlier core
+        lock.write_text(json.dumps(data))
+        out = subprocess.run([sys.executable, str(LAOP), "doctor", str(r.root)], capture_output=True,
+                             text=True, timeout=120).stdout
+        self.assertIn("UPGRADE AVAILABLE: 1 core file(s) differ from this skill's (harness/loop_core.py)", out)
 
 
 # ============================================================================ resolver
