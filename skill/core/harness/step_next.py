@@ -8,6 +8,7 @@ Prints what happened and a single NEXT ACTION line.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -142,6 +143,7 @@ def run(doc: dict, state: dict) -> str:
         "phase": "dispatched",
         "attempt": st["attempts"] + 1,
         "dispatch_sha": L.head_sha(),
+        "dispatch_time": time.time(),
         "open_questions_hash": L.file_hash(L.OPEN_QUESTIONS),
     }
     token_line = L.spawn(state, task["agent"], L.PROMPT_FILE, "DISPATCH", task["id"])
@@ -155,7 +157,8 @@ def run(doc: dict, state: dict) -> str:
     resolution, resolution_by = "", st.pop("pending_resolution_by", "provisional")
     if st.get("pending_resolution"):
         resolution = L.resolution_text(L.REPO / st.pop("pending_resolution"))
-    L.PROMPT_FILE.write_text(L.build_prompt(doc, task, token_line, steer, resolution, resolution_by),
+    L.PROMPT_FILE.write_text(L.build_prompt(doc, task, token_line, steer, resolution, resolution_by,
+                                            interrupted=st.pop("interrupted", "")),
                              encoding="utf-8")
     L.event(state, f"dispatch {task['id']} to {task['agent']} (attempt {st['attempts'] + 1})")
     # Last change before saving: the integrity snapshot of what the task must not touch (F4).

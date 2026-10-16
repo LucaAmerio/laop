@@ -37,7 +37,7 @@ approve         doc=spec|roadmap|<path>  approve the spec, the roadmap or a mile
                 brief=<milestone>        digest in harness/approvals.json (an edited document needs a new
                                         approval); refused while it has [NEEDS CLARIFICATION] markers
 approvals       [milestone=<m>]         approval status of spec, roadmap and briefs
-archive                                 move state.json to harness/logs (start of a new milestone);
+archive                                 move state.json and harness/findings to harness/logs (new milestone);
                                         the resolver trust ledger is carried over
 
 While a task is in flight, state-changing actions are queued and applied by the next step
@@ -107,6 +107,8 @@ def run(entry: dict) -> str:
         with statefile.locked(L.STATE_FILE):
             ledger = statefile.read(L.STATE_FILE).get("ledger")
             L.STATE_FILE.rename(target)
+            if L.FINDINGS_DIR.exists():
+                L.FINDINGS_DIR.rename(target.with_name(target.stem.replace("state_", "findings_", 1)))
             if ledger:  # the trust earned by the resolver outlives the milestone
                 statefile.write(L.STATE_FILE, {"ledger": ledger})
         return f"state archived to {target}" + (" (resolver trust ledger kept)" if ledger else "")

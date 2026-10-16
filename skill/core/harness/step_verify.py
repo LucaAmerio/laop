@@ -90,17 +90,29 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     valid = isinstance(claim, dict) and claim.get("task_id") == task["id"] \
         and claim.get("status") in ("review", "blocked")
 
-    if not valid and L.commits_since(base, excluded) == 0 and not task_dirty():
+    # An empty run: nothing committed by this dispatch (counted from dispatch_sha, not base_sha,
+    # which also holds the commits of earlier attempts) and nothing left uncommitted. A run cut
+    # short by an API error (a StopFailure recorded after the dispatch) is not an attempt either,
+    # even with commits. Both count towards max_empty_runs instead.
+    produced = L.commits_since(current.get("dispatch_sha") or base, excluded) > 0 or bool(task_dirty())
+    interrupted = (L.stop_failure_since(current["dispatch_time"])
+                   if not valid and current.get("dispatch_time") else "")
+    if not valid and (not produced or interrupted):
         state["empty_runs"] += 1
         state["current"] = None
         st["status"] = "todo"
-        st.pop("base_sha", None)  # nothing committed: a fresh base at the next dispatch
+        if L.commits_since(base, excluded) == 0 and not task_dirty():
+            st.pop("base_sha", None)  # no attempt committed anything: a fresh base at the next dispatch
+        what = f"was interrupted by an API error ({interrupted})" if interrupted else "produced nothing"
+        if interrupted:
+            st["interrupted"] = interrupted
         if state["empty_runs"] >= C.MAX_EMPTY_RUNS:
-            return L.halt(doc, state, f"{state['empty_runs']} dispatches produced nothing "
-                                      "(usage limit reached, or the subagent was not spawned?)")
-        L.event(state, f"{task['id']}: the subagent produced nothing; it will be dispatched again")
+            return L.halt(doc, state, f"{state['empty_runs']} dispatches in a row ended without a claim, the "
+                                      f"last one {what} (usage limit reached, or the subagent was not spawned?)")
+        L.event(state, f"{task['id']}: the subagent {what}; dispatched again, not counted as an attempt")
         L.save_state(doc, state)
-        return f"NO RESULT: the subagent left no commit and no claim; the task will be dispatched again.\n{NEXT}"
+        return (f"NO RESULT: the subagent {what} and left no claim; the task will be dispatched again "
+                f"(not counted as an attempt).\n{NEXT}")
     state["empty_runs"] = 0
 
     if not valid:

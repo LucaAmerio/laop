@@ -47,7 +47,7 @@ def run(doc: dict, state: dict) -> str:
     if match.group(1) == "PASS":
         L.mark_done(state, task, f"{current.get('reviewer', 'evaluator')} PASS", notes=text)
     else:
-        L.fail_attempt(doc, state, task, "Reviewer verdict: NEEDS_WORK.\n\n" + text)
+        L.fail_attempt(doc, state, task, "Reviewer verdict: NEEDS_WORK.\n\n" + text, kind="review")
     outcome = state["tasks"][task["id"]]["status"]
     state["current"] = None
     L.save_state(doc, state)

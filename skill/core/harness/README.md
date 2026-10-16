@@ -45,7 +45,7 @@ scripts, in code.
 | `docs/owner_principles.md` | config | The owner's north star, reserved and delegated categories, escalation signals (read by the resolver roles) |
 | `harness/tasks.json` | planner, approved by owner | Tasks of the current milestone |
 | `harness/PROGRESS.md` | agents | Session log (committed) |
-| `harness/state.json`, `STATUS.md`, `claim.json`, `NEXT_FINDINGS.md`, `STEER*.md`, `*_prompt.md`, `owner_queue.json`, `verdicts/`, `resolutions/`, `logs/`, `*.lock` | runtime | Git-ignored |
+| `harness/state.json`, `STATUS.md`, `claim.json`, `findings/` (one file per task, a section per rejected attempt), `STEER*.md`, `*_prompt.md`, `owner_queue.json`, `verdicts/`, `resolutions/`, `logs/`, `*.lock` | runtime | Git-ignored |
 
 ## Roles
 

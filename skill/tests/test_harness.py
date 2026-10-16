@@ -435,8 +435,87 @@ class LoopTests(HarnessTest):
         r.claim("M1-001")
         out = r.step("step_verify")
         self.assertIn("is now 'todo'", out)
-        findings = (r.root / "harness" / "NEXT_FINDINGS.md").read_text()
+        findings = (r.root / "harness" / "findings" / "M1-001.md").read_text()
         self.assertIn("budget", findings)
+
+    def review_needs_work(self, tid: str, text: str, outcome: str = "todo") -> None:
+        """Commit, claim and let the reviewer answer NEEDS_WORK with ``text``."""
+        r = self.r
+        r.commit_file(f"src/{tid}.py", f"X = {time.time_ns()}\n", f"{tid}: work")
+        r.claim(tid)
+        self.assertIn("REVIEW", r.step("step_verify"))
+        (r.root / r.state()["current"]["verdict"]).write_text(f"VERDICT: NEEDS_WORK\n{text}\n")
+        self.assertIn(f"is now '{outcome}'", r.step("step_record"))
+
+    def test_review_findings_survive_a_run_without_claim(self):
+        # reviewer NEEDS_WORK, then a run that commits but writes no claim, then a re-dispatch:
+        # the prompt still carries the verdict (M2-018 in windpy lost it)
+        r = self.r
+        r.tasks([task(), task("M1-002")])
+        r.step("step_next")
+        self.review_needs_work("M1-001", "1. src/a.py:1 the unit is wrong")
+        r.step("step_next")
+        r.commit_file("src/M1-001.py", "X = 0\n", "M1-001: partial")
+        self.assertIn("is now 'todo'", r.step("step_verify"))  # no claim: a rejected attempt
+        self.assertIn("task M1-001", r.step("step_next"))
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        self.assertIn("the unit is wrong", prompt)
+        self.assertIn("No valid harness/claim.json", prompt)
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["attempts"], 2)
+        # a third rejection blocks; the reason points at the task's own file, kept intact
+        self.review_needs_work("M1-001", "1. still wrong", "blocked")
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["status"], "blocked")
+        self.assertIn("harness/findings/M1-001.md", st["blocked_reason"])
+        # a rejection of another task does not touch it
+        r.step("step_next")
+        self.review_needs_work("M1-002", "1. other task")
+        history = (r.root / "harness" / "findings" / "M1-001.md").read_text()
+        for text in ("the unit is wrong", "No valid harness/claim.json", "still wrong"):
+            self.assertIn(text, history)
+        self.assertNotIn("other task", history)
+        # unblocked, it is dispatched with the latest verdict only (it supersedes the earlier ones)
+        r.owner("unblock", "task=M1-001")
+        self.assertIn("task M1-001", r.step("step_next"))
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        self.assertIn("still wrong", prompt)
+        self.assertNotIn("the unit is wrong", prompt)
+
+    def test_empty_run_after_a_rejected_attempt_is_not_an_attempt(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        self.review_needs_work("M1-001", "1. fix it")
+        base = r.state()["tasks"]["M1-001"]["base_sha"]
+        r.step("step_next")
+        out = r.step("step_verify")  # the session died: no commit, no claim
+        self.assertIn("NO RESULT", out)
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["attempts"], 1)
+        self.assertEqual(st["base_sha"], base)  # the first attempt's commits stay under review
+        r.step("step_next")
+        self.assertIn("fix it", (r.root / "harness" / "current_prompt.md").read_text())
+
+    def test_run_cut_by_stop_failure_is_not_an_attempt(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: partial")
+        proc = subprocess.run([sys.executable, str(r.root / "harness" / "notify_hook.py")], cwd=r.root,
+                              input=json.dumps({"hook_event_name": "StopFailure", "error": "rate_limit"}).encode(),
+                              capture_output=True, env=r.env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = r.step("step_verify")
+        self.assertIn("interrupted", out)
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["attempts"], 0)
+        self.assertIn("base_sha", st)
+        r.step("step_next")
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        self.assertIn("rate_limit", prompt)
+        r.claim("M1-001")
+        self.assertIn("REVIEW", r.step("step_verify"))
 
     def test_step_refuses_without_guard(self):
         r = self.r

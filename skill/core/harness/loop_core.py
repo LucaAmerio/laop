@@ -39,7 +39,12 @@ HARNESS = REPO / "harness"
 TASKS_FILE = HARNESS / "tasks.json"
 STATE_FILE = HARNESS / "state.json"
 CLAIM_FILE = HARNESS / "claim.json"
-FINDINGS_FILE = HARNESS / "NEXT_FINDINGS.md"
+#: One findings file per task: a section per rejected attempt, appended, never overwritten.
+FINDINGS_DIR = HARNESS / "findings"
+#: The single findings file of laop <= 0.4.0: read only for a task that has no findings file.
+LEGACY_FINDINGS_FILE = HARNESS / "NEXT_FINDINGS.md"
+#: Last turn that ended on an API error (StopFailure: usage limit, overload), by notify_hook.py.
+STOP_FAILURE_FILE = HARNESS / "logs" / "stop_failure.json"
 STEER_FILE = HARNESS / "STEER.md"
 STATUS_FILE = HARNESS / "STATUS.md"
 PROMPT_FILE = HARNESS / "current_prompt.md"
@@ -186,6 +191,14 @@ def excluded_commits(state: dict, task_id: str, base: str | None = None) -> list
         if sha not in result:
             result.append(sha)
     return result
+
+
+def stop_failure_since(t: float) -> str:
+    """The error of a StopFailure recorded at or after time ``t`` (notify_hook.py), else ''."""
+    data = load_json(STOP_FAILURE_FILE) if STOP_FAILURE_FILE.exists() else None
+    if isinstance(data, dict) and isinstance(data.get("time"), (int, float)) and data["time"] >= t:
+        return str(data.get("error") or "StopFailure")
+    return ""
 
 
 def commits_since(base: str, excluded: list[str] | tuple[str, ...] = ()) -> int:
@@ -463,15 +476,58 @@ def progress(state: dict) -> str:
             f"{'; ' + others if others else ''}; dispatch {state.get('iterations', 0)}/{C.MAX_ITERATIONS}.")
 
 
-def fail_attempt(doc: dict, state: dict, task: dict, findings: str) -> None:
+def findings_path(task_id: str) -> Path:
+    return FINDINGS_DIR / f"{task_id}.md"
+
+
+#: Marker line opening each section of a findings file; kind is review, harness or done.
+FINDINGS_MARK = re.compile(r"^<!-- laop-findings kind=(review|harness|done) attempt=(\d+) -->$", re.M)
+
+
+def append_findings(task_id: str, kind: str, attempt: int, text: str) -> Path:
+    """Append a section to the findings file of ``task_id`` (created with a title if missing)."""
+    path = findings_path(task_id)
+    FINDINGS_DIR.mkdir(parents=True, exist_ok=True)
+    head = "" if path.exists() else f"# Findings for {task_id}\n"
+    title = {"review": "reviewer verdict", "harness": "harness", "done": "done"}[kind]
+    with path.open("a", encoding="utf-8") as f:
+        f.write(f"{head}\n<!-- laop-findings kind={kind} attempt={attempt} -->\n"
+                f"## Attempt {attempt}: {title} ({now()})\n\n{text.rstrip()}\n")
+    return path
+
+
+def open_findings(task_id: str) -> str:
+    """The findings of ``task_id`` the next attempt must address: since the task was last done,
+    the latest reviewer verdict and every harness finding after it (a later review supersedes the
+    sections before it). Falls back to the legacy NEXT_FINDINGS.md when the task has no file."""
+    path = findings_path(task_id)
+    if not path.exists():
+        if LEGACY_FINDINGS_FILE.exists():
+            legacy = LEGACY_FINDINGS_FILE.read_text(encoding="utf-8")
+            if legacy.startswith(f"# Findings for {task_id}"):
+                return legacy.strip()
+        return ""
+    text = path.read_text(encoding="utf-8")
+    marks = list(FINDINGS_MARK.finditer(text))
+    sections = [(m.group(1), text[m.start():marks[i + 1].start() if i + 1 < len(marks) else len(text)])
+                for i, m in enumerate(marks)]
+    done = [i for i, (kind, _) in enumerate(sections) if kind == "done"]
+    sections = sections[done[-1] + 1:] if done else sections
+    reviews = [i for i, (kind, _) in enumerate(sections) if kind == "review"]
+    sections = sections[reviews[-1]:] if reviews else sections
+    return "\n".join(FINDINGS_MARK.sub("", body).strip() + "\n" for _, body in sections).strip()
+
+
+def fail_attempt(doc: dict, state: dict, task: dict, findings: str, kind: str = "harness") -> None:
+    """Count a rejected attempt and append its findings to harness/findings/<task>.md; ``kind`` is
+    "review" for a reviewer verdict, "harness" for what the harness found."""
     st = state["tasks"][task["id"]]
     st["attempts"] += 1
-    FINDINGS_FILE.write_text(f"# Findings for {task['id']} (attempt {st['attempts']})\n\n{findings}\n",
-                             encoding="utf-8")
+    path = append_findings(task["id"], kind, st["attempts"], findings).relative_to(REPO).as_posix()
     if st["attempts"] >= C.MAX_ATTEMPTS_PER_TASK:
         st["status"] = "blocked"
         st["block_type"] = "harness"
-        st["blocked_reason"] = f"rejected {st['attempts']} times; see harness/NEXT_FINDINGS.md"
+        st["blocked_reason"] = f"rejected {st['attempts']} times; see {path}"
         event(state, f"{task['id']} blocked after {st['attempts']} rejected attempts")
         notify(f"{task['id']} blocked", f"{task['title']}\n{progress(state)}\n\n{tail(findings, 30)}")
     else:
@@ -495,9 +551,11 @@ def mark_done(state: dict, task: dict, how: str, notes: str = "") -> None:
         st["done_sha"] = head_sha()
     if notes:
         st["reviewer_notes"] = tail(notes, 40)
-    if FINDINGS_FILE.exists() and FINDINGS_FILE.read_text(encoding="utf-8").startswith(
+    if findings_path(task["id"]).exists():  # closes the open findings; the history stays
+        append_findings(task["id"], "done", st.get("attempts", 0), how)
+    if LEGACY_FINDINGS_FILE.exists() and LEGACY_FINDINGS_FILE.read_text(encoding="utf-8").startswith(
             f"# Findings for {task['id']}"):
-        FINDINGS_FILE.unlink()
+        LEGACY_FINDINGS_FILE.unlink()
     event(state, f"{task['id']} done ({how})")
     notify(f"{task['id']} done", f"{task['title']} ({how})\n{progress(state)}", level="all")
 
@@ -593,7 +651,7 @@ def integrity_snapshot(state: dict) -> dict[str, str]:
     """Digests of what a dispatched task must not change but git does not see: the loop state,
     the review and resolution files, and the integrity paths of the config."""
     snap = {"harness/state.json": state_digest(state)}
-    for rel in ("harness/verdicts", "harness/resolutions", *C.INTEGRITY_PATHS):
+    for rel in ("harness/verdicts", "harness/resolutions", "harness/findings", *C.INTEGRITY_PATHS):
         snap[rel] = _tree_digest(REPO / rel)
     return snap
 
@@ -691,13 +749,18 @@ def shown_check(check: dict) -> dict:
 
 
 def build_prompt(doc: dict, task: dict, token_line: str, steer: str, resolution: str = "",
-                 resolution_by: str = "provisional") -> str:
+                 resolution_by: str = "provisional", interrupted: str = "") -> str:
     findings = ""
-    if FINDINGS_FILE.exists():
-        content = FINDINGS_FILE.read_text(encoding="utf-8")
-        if content.startswith(f"# Findings for {task['id']}"):
-            findings = ("\nA previous attempt at this task was rejected. Address every finding below "
-                        "before claiming review again:\n\n" + content + "\n")
+    content = open_findings(task["id"])
+    if content:
+        findings = ("\nA previous attempt at this task was rejected. Address every finding below "
+                    "before claiming review again (the latest reviewer verdict, then what the harness "
+                    "found after it; the full history is in "
+                    f"{findings_path(task['id']).relative_to(REPO).as_posix()}):\n\n{content}\n")
+    if interrupted:
+        findings += (f"\nThe previous session on this task was interrupted by an API error ({interrupted}) "
+                     "before it wrote a claim; it did not count as an attempt. Its commits, if any, are "
+                     "on the branch: check them and finish the task.\n")
     steer_block = f"\nOwner steering note (takes precedence over the task text):\n{steer}\n" if steer else ""
     resolution_block = ""
     if resolution and resolution_by == "owner":

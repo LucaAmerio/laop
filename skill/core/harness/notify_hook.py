@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -25,6 +26,14 @@ def main() -> int:
     detail = event.get("message") or event.get("error") or event.get("notification_type") or ""
     if not isinstance(detail, str):
         detail = json.dumps(detail)[:500]
+    if name == "StopFailure":
+        # step_verify.py does not count a dispatch cut short by an API error as an attempt
+        try:
+            L.LOG_DIR.mkdir(parents=True, exist_ok=True)
+            L.STOP_FAILURE_FILE.write_text(json.dumps({"time": time.time(), "error": detail[:200]}),
+                                           encoding="utf-8")
+        except OSError:
+            pass
     L.notify(f"Claude Code {name}", detail or "Open the session.")
     return 0
 

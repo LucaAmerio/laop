@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Findings are kept per task in `harness/findings/<task>.md`, a section per rejected attempt,
+  appended and never overwritten (`harness/NEXT_FINDINGS.md`, one file for the whole loop, is
+  only read for a task that has no findings file yet). Before, a rejection overwrote the findings
+  of the previous one, also of another task: a missing claim erased a reviewer's NEEDS_WORK, and a
+  blocked task's `blocked_reason` pointed at findings that were gone. The dispatch prompt carries
+  the latest reviewer verdict and every harness finding after it; `blocked_reason` names the
+  task's file; `owner_tools.py archive` moves `harness/findings` to `harness/logs` with the state.
+- An empty run (no claim, nothing committed or left uncommitted) is counted from the commit at
+  dispatch, not from the task's base: a session that died after an earlier rejected attempt no
+  longer consumes an attempt, and the base with the earlier commits is kept. A dispatch cut short
+  by an API error (a `StopFailure`, now recorded by `notify_hook.py` in
+  `harness/logs/stop_failure.json`) is not an attempt either, even with commits; the next prompt
+  says the session was interrupted. Both count towards `max_empty_runs`.
+
 - The loop command is `/laop-start` in every project (it was `/<name>-loop`, set by
   `loop_command`). `loop_command` is gone from the answers and `project.json`; `upgrade` drops it
   and removes the old `.claude/commands/<name>-loop.md`.

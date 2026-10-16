@@ -37,6 +37,7 @@ harness/state.json
 harness/STATUS.md
 harness/claim.json
 harness/NEXT_FINDINGS.md
+harness/findings/
 harness/STEER.md
 harness/STEER_*.md
 harness/*_prompt.md
