@@ -1,5 +1,39 @@
 # laop changelog
 
+## 0.4.3 (2026-10-18)
+
+- New owner action `reverify task=<id>`: a task whose work is already committed goes straight to the
+  harness checks and the reviewer, without a new task agent. Before, `resume` and `unblock` always
+  dispatched an agent, which re-read the context, re-ran the fast suite and wrote a claim before
+  step_verify ran the same suite again (Talos M6A-026 and M6A-028, blocked only by a global check
+  failing on a file outside the case-writer's allowlist that the owner fixed: about 20 min per task
+  of agent session that added nothing).
+  - Accepted for a task blocked with block_type `harness` or `owner_action`, or resumed and not yet
+    dispatched, that has commits of its own in its range (owner and foreign commits excluded) and a
+    recorded claim with a summary. A question block is refused: it goes through the resolver or
+    `decide`. A refusal changes nothing and queues nothing.
+  - Like `resume`, it keeps base and attempts, and is queued while a task is in flight.
+  - When the loop picks the task, `step_next` spawns nothing (`REVERIFY: ...`): it writes the last
+    claim again (status review, same summary and notes_for_owner, plus "reverified by owner after
+    <commits since the task's last own commit>") and `step_verify` runs as after an agent's claim:
+    integrity, protected paths, acceptance and global checks, then the reviewer and `step_record`.
+    A failure is an ordinary rejected attempt (counted, findings recorded); the next dispatch is a
+    real agent with the findings.
+  - `step_verify` keeps each task's last valid claim in state.json (`last_claim`), since
+    `harness/claim.json` is deleted at the next dispatch; for a task blocked before 0.4.3,
+    `harness/claim.json` is used when it is still that task's.
+  - Logged as "owner reverify <id>"; STATUS.md shows the task as `todo (reverify)` and lists it under
+    "Owner reverify". The block message of a harness or owner_action block (STATUS.md, ntfy) says
+    that after the fix `reverify` is the fast path and `resume` the path when the agent must change
+    its work. Help text of owner_tools.py and harness/README.md updated.
+- The guard no longer records a here-document delimiter as a file the owner wrote. When the closing
+  line was not exact (a trailing blank, an indented `EOF`), the owner's command was unparsable and
+  the guard read the raw text as one command: in `cp a tests/x.json` + newline + `git commit -q -F -
+  <<'EOF'` ... `EOF`, the delimiter and words of the message became `cp` operands and landed in
+  `owner_writes.json` (Talos: "owner edits ... ignored by the checks: ['EOF', ...]"). For the owner,
+  a here-document without an exact closing line now runs to the end of the command, as bash reads
+  it, and a command still unparsable is read a line at a time. Loop roles still fail closed.
+
 ## 0.4.2 (2026-10-17)
 
 - The guard reads here-document bodies as text. Before, it parsed them as shell: a verdict written

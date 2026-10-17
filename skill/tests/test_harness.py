@@ -709,6 +709,25 @@ class LoopTests(HarnessTest):
         self.assertIn("LOOP FINISHED", r.step("step_next"))
         self.assertEqual(json.loads((r.root / "harness" / "owner_writes.json").read_text())["paths"], [])
 
+    def test_heredoc_delimiter_is_not_an_owner_path(self):
+        # Talos, 0.4.2: an owner commit with a here-document while a task ran recorded 'EOF'. A
+        # closing line that is not exact (trailing blank, indented) made the command unparsable and
+        # the raw text was read as one command: the delimiter became the last operand of 'cp'.
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        for close in ("EOF", "EOF ", "  EOF", "EOF\t\n"):
+            for op in ("<<'EOF'", "<<EOF", "<<-EOF", '<<"EOF"'):
+                (r.root / "harness" / "owner_writes.json").unlink(missing_ok=True)
+                command = (f"cp /tmp/b.json tests/data/baseline.json\ngit add tests/data/baseline.json\n"
+                           f"git commit -q -F - {op}\nowner: fix the baseline > done; can't rm it\n{close}")
+                self.assertEqual(r.shell(command, session="B")[0], 0, command)
+                recorded = json.loads((r.root / "harness" / "owner_writes.json").read_text())["paths"]
+                self.assertEqual(recorded, ["tests/data/baseline.json"], repr(command))
+        (r.root / "harness" / "owner_writes.json").unlink()
+        self.assertEqual(r.shell("git commit -q -F - <<'EOF'\nmsg\nEOF", session="B")[0], 0)
+        self.assertFalse((r.root / "harness" / "owner_writes.json").exists())
+
     def test_owner_edits_outside_the_loop_are_not_recorded(self):
         r = self.r
         self.assertEqual(r.write("CLAUDE.md", session="B")[0], 0)
@@ -720,6 +739,144 @@ class LoopTests(HarnessTest):
         out = r.owner("lint")
         self.assertIn("docs/plan/m1.md", out)
         self.assertNotIn("src/c.py", out)
+
+
+# ============================================================================ owner reverify
+
+
+FIXED = {"cmd": ["python", "-c", "import pathlib, sys; sys.exit(not pathlib.Path('data/fixed.txt').exists())"]}
+
+
+class ReverifyTests(HarnessTest):
+    """reverify: a task whose work is committed goes to the checks and the reviewer again,
+    without a new task agent (Talos M6A-026/028: blocked by a check failing on an owner file)."""
+
+    def block_on_harness(self, tid: str = "M1-001") -> None:
+        """Dispatch ``tid``; its agent commits and claims blocked (harness): it cannot fix the file."""
+        r = self.r
+        self.assertIn(f"DISPATCH: task {tid}", r.step("step_next"))
+        r.commit_file(f"src/{tid}.py", "B = 2\n", f"{tid}: work")
+        r.claim(tid, "blocked", block_type="harness", summary="did the work",
+                notes_for_owner="data/fixed.txt is outside my allowlist")
+        self.assertIn("blocked", r.step("step_verify"))
+
+    def owner_fix(self) -> str:
+        self.r.commit_file("data/fixed.txt", "ok\n", "owner: fix")
+        return git(self.r.root, "rev-parse", "HEAD").strip()
+
+    def test_pass_path_runs_checks_and_reviewer_without_an_agent(self):
+        r = self.r
+        r.tasks([task(acceptance=[FIXED])])
+        self.block_on_harness()
+        status = (r.root / "harness" / "STATUS.md").read_text()
+        self.assertIn("reverify task=M1-001", status)  # the block message names the fast path
+        self.assertIn("resume task=M1-001", status)
+        fix = self.owner_fix()
+        out = r.owner("reverify", "task=M1-001")
+        self.assertIn("reverify applied", out)
+        self.assertIn("todo (reverify)", (r.root / "harness" / "STATUS.md").read_text())
+        out = r.step("step_next")
+        self.assertIn("REVERIFY", out)
+        self.assertIn("step_verify", out)
+        current = r.state()["current"]
+        self.assertTrue(current["reverify"])
+        self.assertNotIn("spawn", current)  # nothing for the orchestrator to spawn
+        self.assertEqual(r.tool("Agent", {"subagent_type": "builder", "prompt": "x"})[0], 2)
+        claim = json.loads((r.root / "harness" / "claim.json").read_text())
+        self.assertEqual((claim["status"], claim["summary"]), ("review", "did the work"))
+        self.assertIn("data/fixed.txt is outside my allowlist", claim["notes_for_owner"])
+        self.assertIn(f"reverified by owner after {fix[:10]}", claim["notes_for_owner"])
+        self.assertIn("REVIEW", r.step("step_verify"))
+        (r.root / r.state()["current"]["verdict"]).write_text("VERDICT: PASS\n")
+        self.assertIn("'done'", r.step("step_record"))
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["attempts"], 0)
+        self.assertNotIn("reverify", st)
+        self.assertTrue(any("owner reverify M1-001" in e for e in r.state()["events"]))
+
+    def test_fail_path_counts_the_attempt_and_dispatches_an_agent(self):
+        r = self.r
+        r.tasks([task(acceptance=[FIXED])])
+        self.block_on_harness()
+        base = r.state()["tasks"]["M1-001"]["base_sha"]
+        self.assertIn("applied", r.owner("reverify", "task=M1-001"))  # no fix: the check still fails
+        self.assertIn("REVERIFY", r.step("step_next"))
+        self.assertIn("'todo'", r.step("step_verify"))
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual((st["attempts"], st["base_sha"]), (1, base))
+        self.assertIn("owner reverify", (r.root / "harness" / "findings" / "M1-001.md").read_text())
+        out = r.step("step_next")
+        self.assertIn("DISPATCH: task M1-001", out)  # a real agent, with the findings
+        self.assertEqual(r.state()["current"]["spawn"]["agent"], "builder")
+        self.assertIn("Harness checks failed (owner reverify)",
+                      (r.root / "harness" / "current_prompt.md").read_text())
+
+    def test_refused_for_each_precondition_and_state_unchanged(self):
+        r = self.r
+        r.tasks([task(acceptance=[FIXED])])
+        r.step("step_next")
+        r.set_state(lambda s: s.update(current=None))
+
+        def refused(fragment: str) -> None:
+            before = r.state()
+            out = r.owner("reverify", "task=M1-001")
+            self.assertIn("REFUSED", out)
+            self.assertIn(fragment, out)
+            self.assertEqual(r.state(), before)
+            queue = r.root / "harness" / "owner_queue.json"
+            self.assertFalse(queue.exists() and json.loads(queue.read_text()).get("actions"))
+
+        def st(**kw):
+            r.set_state(lambda s: s["tasks"]["M1-001"].update(kw))
+
+        refused("is 'in_progress'")
+        st(status="todo")
+        refused("is 'todo'")  # not resumed
+        st(status="blocked", block_type="question")
+        refused("blocked on a question")
+        st(block_type="harness")
+        refused("no commit of its own")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: work")
+        r.set_state(lambda s: s["tasks"]["M1-001"]["own_commits"].append(
+            git(r.root, "rev-parse", "HEAD").strip()))
+        refused("no claim of M1-001")
+        r.claim("M1-002")  # another task's claim does not count
+        refused("no claim of M1-001")
+        r.claim("M1-001", "blocked", block_type="owner_action", summary="did it")  # pre-0.4.3: on disk
+        st(block_type="owner_action")
+        self.assertIn("applied", r.owner("reverify", "task=M1-001"))
+        self.assertEqual(r.state()["tasks"]["M1-001"]["reverify"]["claim"]["summary"], "did it")
+        self.assertIn("REFUSED", r.owner("reverify", "task=M1-999"))
+
+    def test_accepted_after_resume(self):
+        r = self.r
+        r.tasks([task(acceptance=[FIXED])])
+        self.block_on_harness()
+        self.assertEqual(r.state()["tasks"]["M1-001"]["last_claim"]["summary"], "did the work")
+        self.assertIn("resume applied", r.owner("resume", "task=M1-001"))
+        self.owner_fix()
+        self.assertIn("reverify applied", r.owner("reverify", "task=M1-001"))
+        self.assertIn("REVERIFY", r.step("step_next"))
+
+    def test_queued_while_another_task_is_in_flight(self):
+        r = self.r
+        r.tasks([task(acceptance=[FIXED]), task("M1-002")])
+        self.block_on_harness()
+        self.assertIn("DISPATCH: task M1-002", r.step("step_next"))
+        out = r.owner("reverify", "task=M1-002")
+        self.assertIn("REFUSED", out)  # in flight: nothing to reverify
+        self.owner_fix()  # the owner's fix, recorded as an owner commit while M1-002 runs
+        self.assertIn("queued", r.owner("owner_commit", f"commit={git(r.root, 'rev-parse', 'HEAD').strip()}"))
+        self.assertIn("reverify queued", r.owner("reverify", "task=M1-001"))
+        self.assertNotIn("reverify", r.state()["tasks"]["M1-001"])
+        r.commit_file("src/c.py", "C = 3\n", "M1-002: c")
+        r.claim("M1-002")
+        self.assertIn("REVIEW", r.step("step_verify"))  # the step applied the queue
+        self.assertIn("reverify", r.state()["tasks"]["M1-001"])
+        (r.root / r.state()["current"]["verdict"]).write_text("VERDICT: PASS\n")
+        r.step("step_record")
+        self.assertIn("REVERIFY: task M1-001", r.step("step_next"))
+        self.assertIn("REVIEW", r.step("step_verify"))
 
 
 # ============================================================================ before the plan

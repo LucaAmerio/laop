@@ -44,6 +44,9 @@ def run(doc: dict, state: dict) -> str:
     current = state["current"]
     if current:
         phase = current["phase"]
+        if phase == "dispatched" and current.get("reverify"):
+            return (f"PENDING: the owner reverify of task {current['task_id']} is not verified yet.\n"
+                    "NEXT ACTION: run python harness/step_verify.py")
         if phase == "dispatched":
             return (f"PENDING: task {current['task_id']} was dispatched to '{current['agent']}' "
                     "but not verified yet. If the subagent never ran or left nothing, step_verify "
@@ -135,6 +138,8 @@ def run(doc: dict, state: dict) -> str:
         # A fresh base: from here on the task's own commits are tracked dispatch by dispatch.
         st.update(base_sha=L.head_sha(), own_commits=[], tracked=True)
     st["status"] = "in_progress"
+    st.pop("resumed", None)
+    reverify = st.pop("reverify", None)
     L.CLAIM_FILE.unlink(missing_ok=True)
     state["current"] = {
         "task_id": task["id"],
@@ -146,6 +151,8 @@ def run(doc: dict, state: dict) -> str:
         "dispatch_time": time.time(),
         "open_questions_hash": L.file_hash(L.OPEN_QUESTIONS),
     }
+    if reverify:
+        return start_reverify(doc, state, task, reverify, starting, warnings)
     token_line = L.spawn(state, task["agent"], L.PROMPT_FILE, "DISPATCH", task["id"])
     state["last_task"] = task["id"]
     if starting:
@@ -170,6 +177,30 @@ def run(doc: dict, state: dict) -> str:
     L.save_state(doc, state)
     out = (f"DISPATCH: task {task['id']} ({task['title']}) to the '{task['agent']}' subagent.\n"
            + L.spawn_instruction(state, "step_verify"))
+    if warnings:
+        out = "WARNING (task lint): " + "; ".join(warnings[:10]) + "\n" + out
+    return L.terminal(out, doc, state) if starting else out
+
+
+def start_reverify(doc: dict, state: dict, task: dict, reverify: dict, starting: bool,
+                   warnings: list[str]) -> str:
+    """Owner reverify: no task agent. The task's last claim, recorded again for review with the
+    owner's note, goes to step_verify exactly as an agent's claim would."""
+    claim = L.reverify_claim(state, task["id"], reverify.get("claim") or {})
+    L.save_json(L.CLAIM_FILE, claim)
+    state["current"]["reverify"] = True
+    state["last_task"] = task["id"]
+    if starting:
+        L.notify("loop started", f"First task: {task['id']} (owner reverify).\n{L.progress(state)}",
+                 level="all")
+    state["loop_active"] = True
+    L.event(state, f"owner reverify {task['id']} (attempt {state['tasks'][task['id']]['attempts'] + 1}): "
+                   f"no agent dispatched; {claim['notes_for_owner'].splitlines()[-1]}")
+    state["current"]["integrity"] = L.integrity_snapshot(state)
+    L.save_state(doc, state)
+    out = (f"REVERIFY: task {task['id']} ({task['title']}): the owner asked to verify its committed work "
+           "again; no subagent to spawn, the harness checks and the reviewer follow.\n"
+           "NEXT ACTION: run python harness/step_verify.py")
     if warnings:
         out = "WARNING (task lint): " + "; ".join(warnings[:10]) + "\n" + out
     return L.terminal(out, doc, state) if starting else out

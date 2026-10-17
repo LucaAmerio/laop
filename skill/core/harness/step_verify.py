@@ -115,6 +115,9 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
         return (f"NO RESULT: the subagent {what} and left no claim; the task will be dispatched again "
                 f"(not counted as an attempt).\n{NEXT}")
     state["empty_runs"] = 0
+    if valid:  # kept for a later reverify: claim.json is deleted at the next dispatch
+        L.remember_claim(state, task["id"], claim, current["attempt"])
+    via = " (owner reverify)" if current.get("reverify") else ""
 
     if not valid:
         L.fail_attempt(doc, state, task, "No valid harness/claim.json for this task was written. "
@@ -132,7 +135,7 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     else:
         ok, report = L.run_checks(task, current["attempt"])
         if not ok:
-            L.fail_attempt(doc, state, task, "Harness checks failed.\n\n" + report)
+            L.fail_attempt(doc, state, task, f"Harness checks failed{via}.\n\n" + report)
         elif task.get("review", True):
             return request_review(doc, state, task, base, excluded, sorted(owner_files))
         else:

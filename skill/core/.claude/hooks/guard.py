@@ -164,10 +164,13 @@ class _Scanner:
     """Separates, in a shell command, the text the shell parses as commands from the text it does
     not: here-document bodies and PowerShell here-strings, quoted strings, comments. Commands
     substituted where the shell expands text (``$(...)``, POSIX backticks) are collected in
-    ``nested`` to be checked on their own."""
+    ``nested`` to be checked on their own.
 
-    def __init__(self, text: str, windows_syntax: bool):
-        self.s, self.n, self.win = text, len(text), windows_syntax
+    ``lenient`` (the owner's commands): a here-document without its closing line runs to the end
+    of the command, as bash reads it (with a warning), instead of making the command unparsable."""
+
+    def __init__(self, text: str, windows_syntax: bool, lenient: bool = False):
+        self.s, self.n, self.win, self.lenient = text, len(text), windows_syntax, lenient
         self.esc = "`" if windows_syntax else "\\"
         self.nested: list[str] = []
 
@@ -177,7 +180,7 @@ class _Scanner:
         _, j = self.scan(i + 2, until_paren=True)
         inner = self.s[i + 2:j]
         if inner.startswith("(") and inner.endswith(")"):
-            arithmetic = _Scanner(inner[1:-1], self.win)
+            arithmetic = _Scanner(inner[1:-1], self.win, self.lenient)
             arithmetic.expanded(0, len(inner) - 2)
             self.nested += arithmetic.nested
         else:
@@ -292,7 +295,11 @@ class _Scanner:
             start = i
             while True:
                 if i >= self.n:
-                    raise Unparsable(f"the here-document '{delimiter}' has no closing line")
+                    if not self.lenient:
+                        raise Unparsable(f"the here-document '{delimiter}' has no closing line")
+                    if expanded:
+                        self.expanded(start, self.n)
+                    break
                 eol = s.find("\n", i)
                 eol = self.n if eol < 0 else eol
                 line = s[i:eol].rstrip("\r")
@@ -359,12 +366,13 @@ class _Scanner:
                 i += 1
         if until_paren:
             raise Unparsable("a '$(' substitution is not closed")
-        if pending:
+        if pending and not self.lenient:
             raise Unparsable(f"the here-document '{pending[0][0]}' has no body and no closing line")
         return "".join(out), i
 
 
-def strip_heredocs(command: str, windows_syntax: bool = False) -> tuple[str, list[str]]:
+def strip_heredocs(command: str, windows_syntax: bool = False,
+                   lenient: bool = False) -> tuple[str, list[str]]:
     """The command as the guard analyses it, and the commands substituted inside it.
 
     Here-document bodies (``<<WORD``, ``<<-WORD``) and PowerShell here-strings (``@'...'@``,
@@ -375,9 +383,10 @@ def strip_heredocs(command: str, windows_syntax: bool = False) -> tuple[str, lis
     redirection of the here-document (``cat > file <<'EOF'``) stays in the command. Comments are
     dropped and newlines outside quotes become ';' (they separate commands).
 
-    Raises Unparsable when a body has no closing line, or a quote or a substitution is not closed.
+    Raises Unparsable when a body has no closing line (unless ``lenient``: then it runs to the end,
+    as bash reads it), or a quote or a substitution is not closed.
     """
-    scanner = _Scanner(command, windows_syntax)
+    scanner = _Scanner(command, windows_syntax, lenient)
     text, _ = scanner.scan()
     return text, scanner.nested
 
@@ -702,10 +711,13 @@ def check_owner_shell(command: str, cwd: str | None, depth: int, windows_syntax:
         if any(w in lowered for w in (" > ", ">>", "git commit", "git add", "rm ", "mv ", "pip ")):
             deny("Shell command blocked: it would write inside a protected path, which is "
                  "read-only for every role (harness/project.json, protected_paths).")
+    # A here-document whose closing line is not exact (indented, trailing blank) runs to the end
+    # of the command, as bash reads it: its body and delimiter are not paths the owner writes.
     try:
-        command, substituted = strip_heredocs(command, windows_syntax)
+        command, substituted = strip_heredocs(command, windows_syntax, lenient=True)
     except Unparsable:
-        substituted = []  # analyse the raw text, as before here-documents were recognised
+        # an unclosed quote or substitution: the raw text, a command per line
+        command, substituted = command.replace("\n", " ; "), []
     for inner in substituted:
         if depth >= 3:
             deny("Shell commands nested more than three levels cannot be checked.")

@@ -414,14 +414,19 @@ def provisional_lines(state: dict) -> str:
 
 def write_status(doc: dict, state: dict) -> None:
     counts: dict[str, int] = {}
-    rows, blocked, gates = [], [], []
+    rows, blocked, gates, reverify = [], [], [], []
     for t in doc["tasks"]:
         st = state["tasks"][t["id"]]
         counts[st["status"]] = counts.get(st["status"], 0) + 1
-        rows.append(f"| {t['id']} | {t['agent']} | {st['status']} | {st['attempts']} | {t['title']} |")
+        shown = st["status"] + (" (reverify)" if st.get("reverify") else "")
+        rows.append(f"| {t['id']} | {t['agent']} | {shown} | {st['attempts']} | {t['title']} |")
+        if st.get("reverify"):
+            reverify.append(f"- **{t['id']}**: owner reverify queued {st['reverify'].get('queued', '')}; "
+                            "its committed work goes to the checks and the reviewer, without an agent")
         if st["status"] == "blocked":
             kind = st.get("block_type", "question")
-            blocked.append(f"- **{t['id']}** ({kind}): {st.get('blocked_reason', '')}")
+            hint = f" {unblock_hint(t['id'])}" if kind in ("harness", "owner_action") else ""
+            blocked.append(f"- **{t['id']}** ({kind}): {st.get('blocked_reason', '')}{hint}")
         if st["status"] == "awaiting_owner":
             gates.append(f"- **{t['id']}**: {t['title']}")
     prov = [f"- **{q}** (task {p['task']}): `{p['file']}`" for q, p in sorted(open_provisional(state).items())]
@@ -440,6 +445,7 @@ def write_status(doc: dict, state: dict) -> None:
         "## Provisional decisions awaiting ratification", *(prov or ["(none)"]), "",
         "## Questions waiting for the owner, with a recommendation", *(questions or ["(none)"]), "",
         "## Blocked", *(blocked or ["(none)"]), "",
+        *(["## Owner reverify", *reverify, ""] if reverify else []),
         f"## Resolver trust (mode {C.RESOLVER_MODE})", *(trust or ["(no question yet)"]), "",
         "## Recent events", *[f"- {e}" for e in state["events"][-15:]], "",
     ]
@@ -555,7 +561,8 @@ def fail_attempt(doc: dict, state: dict, task: dict, findings: str, kind: str = 
         st["block_type"] = "harness"
         st["blocked_reason"] = f"rejected {st['attempts']} times; see {path}"
         event(state, f"{task['id']} blocked after {st['attempts']} rejected attempts")
-        notify(f"{task['id']} blocked", f"{task['title']}\n{progress(state)}\n\n{tail(findings, 30)}")
+        notify(f"{task['id']} blocked", f"{task['title']}\n{progress(state)}\n{unblock_hint(task['id'])}"
+               f"\n\n{tail(findings, 30)}")
     else:
         st["status"] = "todo"
         event(state, f"{task['id']} attempt {st['attempts']} rejected")
@@ -567,7 +574,8 @@ def block(state: dict, task: dict, reason: str, block_type: str) -> None:
     st = state["tasks"][task["id"]]
     st.update(status="blocked", blocked_reason=reason, block_type=block_type)
     event(state, f"{task['id']} blocked ({block_type}): {reason[:200]}")
-    notify(f"{task['id']} needs you", reason)
+    hint = f"\n{unblock_hint(task['id'])}" if block_type in ("harness", "owner_action") else ""
+    notify(f"{task['id']} needs you", reason + hint)
 
 
 def mark_done(state: dict, task: dict, how: str, notes: str = "") -> None:
@@ -1174,8 +1182,8 @@ def record_owner_write(state: dict, rel: str) -> None:
 # --------------------------------------------------------------------------- owner actions
 
 
-OWNER_ACTIONS =("pass_gate", "unblock", "resume", "owner_commit", "foreign_commit", "allow_path",
-                 "clear_halt", "release", "ratify", "override", "decide", "trust")
+OWNER_ACTIONS = ("pass_gate", "unblock", "resume", "reverify", "owner_commit", "foreign_commit",
+                 "allow_path", "clear_halt", "release", "ratify", "override", "decide", "trust")
 DECIDE_VERDICTS = ("agree", "amend", "differ")
 TRUST_LEVELS = ("owner", "warmup", "auto")
 
@@ -1202,7 +1210,7 @@ def drain_owner_queue(doc: dict, state: dict) -> list[str]:
     return results
 
 
-TASK_ACTIONS = ("pass_gate", "unblock", "resume", "foreign_commit", "allow_path")
+TASK_ACTIONS = ("pass_gate", "unblock", "resume", "reverify", "foreign_commit", "allow_path")
 
 
 def owner_action_problem(doc: dict, state: dict, a: dict) -> str:
@@ -1230,6 +1238,8 @@ def owner_action_problem(doc: dict, state: dict, a: dict) -> str:
             return (f"{task_id} is the final gate: {C.OPEN_QUESTIONS_REL} still says provisional or "
                     f"pending ratification for {', '.join(stale)}, closed by the owner. Update those "
                     "entries ('Status: decided ...'), commit, then pass the gate.")
+    elif action == "reverify":
+        return reverify_problem(doc, state, task_id)
     elif action in ("owner_commit", "foreign_commit"):
         if not a.get("commit"):
             return f"{action}: set commit=<sha>."
@@ -1281,8 +1291,15 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
         st.pop("base_sha", None)  # a fresh base at the next dispatch
         event(state, f"owner unblocked {task_id}")
     elif action == "resume":
-        state["tasks"][task_id].update(status="todo", blocked_reason="")
+        state["tasks"][task_id].update(status="todo", blocked_reason="", resumed=True)
         event(state, f"owner resumed {task_id} (base kept)")
+    elif action == "reverify":
+        st = state["tasks"][task_id]
+        st.update(status="todo", blocked_reason="", reverify={"claim": last_claim(state, task_id),
+                                                              "queued": a.get("queued") or now()})
+        st.pop("resumed", None)
+        event(state, f"owner reverify {task_id}: its committed work goes to the checks and the "
+                     "reviewer, without a new task agent")
     elif action in ("owner_commit", "foreign_commit"):
         sha = git("rev-parse", "--verify", f"{a['commit']}^{{commit}}")
         target = (state.setdefault("owner_commits", []) if action == "owner_commit"
@@ -1385,6 +1402,86 @@ def decide(state: dict, a: dict) -> str:
         ledger_record(state, q.get("category", ""), qid, q["task"], "obvious")
     event(state, f"owner decided {qid} ({verdict}); {q['task']} resumes")
     return "decide done."
+
+
+# --------------------------------------------------------------------------- reverify
+
+
+#: Claim fields kept in the state (``last_claim``) for a later ``reverify``.
+CLAIM_FIELDS = ("status", "summary", "notes_for_owner", "block_type")
+
+UNBLOCK_HINT = ("After the fix: 'owner_tools.py reverify task={tid}' sends the committed work straight to "
+                "the checks and the reviewer (fast path); 'resume task={tid}' dispatches the agent again "
+                "when it must change its work.")
+
+
+def unblock_hint(task_id: str) -> str:
+    return UNBLOCK_HINT.format(tid=task_id)
+
+
+def remember_claim(state: dict, task_id: str, claim: dict, attempt: int) -> None:
+    """Keep the task's last valid claim in the state: claim.json is deleted at the next dispatch."""
+    state["tasks"][task_id]["last_claim"] = {
+        **{k: claim[k] for k in CLAIM_FIELDS if claim.get(k)}, "attempt": attempt, "time": now()}
+
+
+def last_claim(state: dict, task_id: str) -> dict | None:
+    """The task's last claim with a summary: kept in the state, else harness/claim.json when it is
+    still the task's (a claim written before laop 0.4.3, which did not keep it)."""
+    kept = state["tasks"].get(task_id, {}).get("last_claim")
+    if isinstance(kept, dict) and str(kept.get("summary") or "").strip():
+        return kept
+    try:
+        claim = load_json(CLAIM_FILE) if CLAIM_FILE.exists() else None
+    except ValueError:
+        claim = None
+    if isinstance(claim, dict) and claim.get("task_id") == task_id and str(claim.get("summary") or "").strip():
+        return {k: claim[k] for k in CLAIM_FIELDS if claim.get(k)}
+    return None
+
+
+def reverify_problem(doc: dict, state: dict, task_id: str) -> str:
+    """'' when ``task_id`` may be reverified (its committed work checked and reviewed again without
+    a new task agent), else why not."""
+    task = task_by_id(doc, task_id)
+    st = state["tasks"][task_id]
+    if task["agent"] == GATE:
+        return f"reverify: {task_id} is a gate: pass it with pass_gate."
+    if (state.get("current") or {}).get("task_id") == task_id:
+        return f"reverify: {task_id} is in flight; wait for its step to finish."
+    if st["status"] == "blocked" and st.get("block_type", "question") == "question":
+        return (f"reverify: {task_id} is blocked on a question; a question goes through the resolver "
+                "or the owner's decision (decide), then the task resumes.")
+    if not ((st["status"] == "blocked" and st.get("block_type") in ("harness", "owner_action"))
+            or (st["status"] == "todo" and st.get("resumed"))):
+        return (f"reverify: {task_id} is '{st['status']}'; only a task blocked with block_type harness "
+                "or owner_action, or one resumed and not yet dispatched, can be reverified.")
+    base = st.get("base_sha")
+    if not base or commits_since(base, excluded_commits(state, task_id, base)) == 0:
+        return (f"reverify: {task_id} has no commit of its own since its base (owner and foreign "
+                "commits excluded): there is no work to verify. Use resume.")
+    if not last_claim(state, task_id):
+        return (f"reverify: no claim of {task_id} with a summary is kept (state.json last_claim, or "
+                "harness/claim.json); use resume.")
+    return ""
+
+
+def fix_commits(state: dict, task_id: str) -> list[str]:
+    """Commits made after the task's last own commit that are no task's own: the owner's fix."""
+    st = state["tasks"][task_id]
+    own = st.get("own_commits") or []
+    since = own[-1] if own else st["base_sha"]
+    every_own = {c for s in state["tasks"].values() for c in s.get("own_commits", [])}
+    return [c for c in git("rev-list", "--reverse", f"{since}..HEAD").splitlines() if c not in every_own]
+
+
+def reverify_claim(state: dict, task_id: str, kept: dict) -> dict:
+    """The claim of a reverify: the last one recorded, as a claim for review, with the owner's note."""
+    fixes = fix_commits(state, task_id)
+    note = "reverified by owner after " + (", ".join(c[:10] for c in fixes) if fixes else "no new commit")
+    notes = "\n".join(x for x in (str(kept.get("notes_for_owner") or "").strip(), note) if x)
+    return {"task_id": task_id, "status": "review", "summary": kept.get("summary", ""),
+            "notes_for_owner": notes}
 
 
 # --------------------------------------------------------------------------- task lint (F6)

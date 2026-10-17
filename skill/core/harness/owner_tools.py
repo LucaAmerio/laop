@@ -12,6 +12,11 @@ pass_gate       task=<gate id>          pass a gate (a "final" gate refuses whil
                                         decisions are open)
 unblock         task=<id>               back to todo, attempts reset, fresh base at next dispatch
 resume          task=<id>               back to todo, base and attempts kept
+reverify        task=<id>               the task's committed work goes straight to the checks and the
+                                        reviewer, without a new task agent (base and attempts kept):
+                                        for a task blocked (harness or owner_action) or resumed, with
+                                        commits of its own and a recorded claim. Fast path after an
+                                        owner fix; use resume when the agent must change its work
 ratify          qid=<question key>      accept a provisional decision of the resolver; its entry
                                         in the open-questions file is set to decided (commit it),
                                         or a REMINDER says what to edit by hand
