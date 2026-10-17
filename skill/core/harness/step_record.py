@@ -37,12 +37,15 @@ def run(doc: dict, state: dict) -> str:
 
     if not match:
         current["review_tries"] = current.get("review_tries", 0) + 1
+        # a verdict the reviewer tried to write and the guard refused is not a missing verdict
+        blocked = L.guard_blocks_note(current.get("reviewer", "evaluator"), current["verify_time"])
         if current["review_tries"] >= 2:
             return L.halt(doc, state, f"the reviewer did not produce a valid verdict for {task['id']} "
-                                      f"twice; the work is committed, restart /{C.LOOP_COMMAND} to re-review")
+                                      f"twice; the work is committed, restart /{C.LOOP_COMMAND} to re-review."
+                                      + blocked)
         L.save_state(doc, state)
         return (f"NO VALID VERDICT in {current['verdict']} (the first line must be 'VERDICT: PASS' or "
-                "'VERDICT: NEEDS_WORK').\n" + L.spawn_instruction(state, "step_record"))
+                f"'VERDICT: NEEDS_WORK').{blocked}\n" + L.spawn_instruction(state, "step_record"))
 
     if match.group(1) == "PASS":
         L.mark_done(state, task, f"{current.get('reviewer', 'evaluator')} PASS", notes=text)

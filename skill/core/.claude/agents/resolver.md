@@ -35,4 +35,4 @@ Escalation test: <the reserved categories and signals you considered, and why no
 
 For ESCALATE, add `Escalated because: <category or signal, and why>` after the Category line, and write Decision, In plain words, Alternatives and Checked as your recommendation for the owner: the owner decides with it. Only when the question depends entirely on information you do not have (the owner's preference, an external program's behaviour) say so in Decision and give the options with what each implies.
 
-Your final reply to the orchestrator is only the first line.
+Your final reply to the orchestrator is only the first line. Write the resolution file with the Write tool, never through Bash (the loop reads only the file, and a shell write the guard refuses leaves no resolution). Wait for the result of the Write before your final reply, never in the same message: if it failed, fix the cause and write again. Never reply with a resolution that is not in the file.

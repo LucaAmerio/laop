@@ -339,8 +339,9 @@ def init(repo: Path, answers_path: Path) -> int:
         config(f".claude/agents/{agent}.md",
                fill((TEMPLATES / "agents" / f"{agent}.md").read_text(encoding="utf-8"), values))
     if not (repo / a["open_questions"]).exists():
-        config(a["open_questions"], "# Open questions for the owner\n\nEach entry: id (Qn), status, raised "
-               "by, question, options, recommendation, consequences, decision.\n")
+        config(a["open_questions"], "# Open questions for the owner\n\nEach entry: a '## Qn: <title>' "
+               "heading, then status, raised by, question, options, recommendation, consequences, "
+               "decision.\n")
     if not (repo / "harness/PROGRESS.md").exists():
         config("harness/PROGRESS.md", "# Progress log\n")
     gitignore = repo / ".gitignore"

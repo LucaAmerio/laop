@@ -43,12 +43,13 @@ def _first_line(text: str, pattern: str) -> str | None:
 def _retry_or_block(doc: dict, state: dict, task: dict, who: str, expected: str) -> str:
     current = state["current"]
     current["resolve_tries"] = current.get("resolve_tries", 0) + 1
+    blocked = L.guard_blocks_note(who, current["resolve_time"])
     if current["resolve_tries"] >= 2:
-        return _for_owner(doc, state, task, f"the {who} did not write a valid '{expected}' line twice",
-                          with_recommendation=False)
+        return _for_owner(doc, state, task, f"the {who} did not write a valid '{expected}' line "
+                          f"twice.{blocked}", with_recommendation=False)
     L.save_state(doc, state)
-    return (f"NO VALID {who.upper()} OUTPUT in {current['resolution']} (expected a line '{expected}').\n"
-            + L.spawn_instruction(state, "step_resolve"))
+    return (f"NO VALID {who.upper()} OUTPUT in {current['resolution']} (expected a line '{expected}')."
+            f"{blocked}\n" + L.spawn_instruction(state, "step_resolve"))
 
 
 def _for_owner(doc: dict, state: dict, task: dict, why: str, with_recommendation: bool = True) -> str:

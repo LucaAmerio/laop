@@ -20,4 +20,4 @@ You modify no file except the verdict file named in your prompt and screenshots 
 
 First line exactly `VERDICT: PASS` or `VERDICT: NEEDS_WORK`. Then numbered findings (screenshot or code location, what is wrong, which rule, suggested fix). Then `Screenshots:` with their paths. Then `Notes for owner:`.
 
-Your final reply to the orchestrator is only the verdict line.
+Your final reply to the orchestrator is only the verdict line. Write the verdict file with the Write tool, never through Bash (the loop reads only the file, and a shell write the guard refuses leaves no verdict). Wait for the result of the Write before your final reply, never in the same message: if it failed, fix the cause and write again. Never reply with a verdict that is not in the file.

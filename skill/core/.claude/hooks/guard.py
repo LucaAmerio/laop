@@ -30,7 +30,8 @@ non-blocking error and would let the call through.
 
 Limitations
 -----------
-Shell analysis is heuristic: a Python script that opens a file is not detected here. Writes are
+Shell analysis is heuristic: a Python script that opens a file is not detected here. Here-document
+bodies and PowerShell here-strings are data (strip_heredocs); what cannot be delimited is blocked. Writes are
 re-checked by step_verify.py on the git diff of every task; reads have no second layer.
 """
 
@@ -120,10 +121,265 @@ FIX_HINT = (
 )
 
 
+BLOCKS_LOG = PROJECT_DIR / "harness" / "logs" / "guard_blocks.jsonl"
+BLOCKS_KEEP = 200  # entries kept in the log
+#: The call being checked, for the blocks log: set by run() once the role is known.
+CALL: dict = {}
+
+
 def deny(message: str) -> None:
     """Block the tool call and show the message to the agent."""
     print(message, file=sys.stderr)
+    log_block(message)
     sys.exit(2)
+
+
+def log_block(message: str) -> None:
+    """Record a blocked call of a loop role in harness/logs/guard_blocks.jsonl: the step scripts
+    tell a reviewer that wrote nothing from one the guard stopped. Never fails the deny."""
+    if not CALL or CALL.get("role") == pathrules.OWNER_ROLE:
+        return
+    try:
+        BLOCKS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        lines = BLOCKS_LOG.read_text(encoding="utf-8").splitlines() if BLOCKS_LOG.exists() else []
+        lines = lines[-(BLOCKS_KEEP - 1):] + [json.dumps({**CALL, "time": time.time(),
+                                                           "message": message[:600]})]
+        BLOCKS_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:  # noqa: BLE001 - logging must never let the call through
+        pass
+
+
+class Unparsable(ValueError):
+    """Text whose extent as a command cannot be determined (an unclosed quote, here-document,
+    here-string or substitution): the guard blocks it (fail closed)."""
+
+
+# '#' starts a comment only at the start of a word, after one of these (or at the start).
+_COMMENT_AFTER = " \t\r\n;&|()"
+# Characters that end the delimiter word of a here-document.
+_WORD_END = " \t\r\n;&|()<>"
+
+
+class _Scanner:
+    """Separates, in a shell command, the text the shell parses as commands from the text it does
+    not: here-document bodies and PowerShell here-strings, quoted strings, comments. Commands
+    substituted where the shell expands text (``$(...)``, POSIX backticks) are collected in
+    ``nested`` to be checked on their own."""
+
+    def __init__(self, text: str, windows_syntax: bool):
+        self.s, self.n, self.win = text, len(text), windows_syntax
+        self.esc = "`" if windows_syntax else "\\"
+        self.nested: list[str] = []
+
+    def substitution(self, i: int) -> int:
+        """At '$(': record the substituted command; return the index after its ')'.
+        Arithmetic ``$((...))`` is not a command, but may contain substitutions of its own."""
+        _, j = self.scan(i + 2, until_paren=True)
+        inner = self.s[i + 2:j]
+        if inner.startswith("(") and inner.endswith(")"):
+            arithmetic = _Scanner(inner[1:-1], self.win)
+            arithmetic.expanded(0, len(inner) - 2)
+            self.nested += arithmetic.nested
+        else:
+            self.nested.append(inner)
+        return j + 1
+
+    def backtick(self, i: int) -> int:
+        """At a POSIX backtick: record the substituted command; return the index after it."""
+        j = i + 1
+        while j < self.n and self.s[j] != "`":
+            j += 2 if self.s[j] == "\\" else 1
+        if j >= self.n:
+            raise Unparsable("a backtick substitution is not closed")
+        self.nested.append(self.s[i + 1:j])
+        return j + 1
+
+    def expanded(self, i: int, end: int, closing: str = "") -> tuple[str, int]:
+        """Text the shell expands without parsing it as commands: a double-quoted string (up to
+        ``closing``), an unquoted here-document body, a ``@"`` here-string. Returns the text with
+        each substitution replaced by ``$SUBST``, and the index after it."""
+        out: list[str] = []
+        while i < end:
+            c = self.s[i]
+            if closing and c == closing:
+                return "".join(out), i + 1
+            if c == self.esc:
+                out.append(self.s[i:i + 2])
+                i += 2
+            elif self.s.startswith("$(", i):
+                i = self.substitution(i)
+                out.append("$SUBST")
+            elif c == "`" and not self.win:
+                i = self.backtick(i)
+                out.append("$SUBST")
+            else:
+                out.append(c)
+                i += 1
+        if closing or i > end:
+            raise Unparsable("a double-quoted string is not closed" if closing
+                             else "a substitution runs past the end of its here-document")
+        return "".join(out), i
+
+    def single_quoted(self, i: int) -> int:
+        """At an opening single quote: return the index after the closing one."""
+        s, j = self.s, i + 1
+        ansi_c = not self.win and i > 0 and s[i - 1] == "$"  # $'...' takes backslash escapes
+        while j < self.n:
+            if ansi_c and s[j] == "\\":
+                j += 2
+            elif s[j] == "'":
+                if self.win and s.startswith("''", j):  # PowerShell: '' is a quote
+                    j += 2
+                else:
+                    return j + 1
+            else:
+                j += 1
+        raise Unparsable("a single-quoted string is not closed")
+
+    def herestring(self, i: int, out: list[str]) -> int | None:
+        """At the quote of a PowerShell ``@'`` or ``@"``: skip the here-string and return the
+        index after its closing line; None if this is not a here-string."""
+        s, q = self.s, self.s[i]
+        if not (self.win and out and out[-1] == "@" and re.match(r"[ \t]*\r?\n", s[i + 1:])):
+            return None
+        start = s.index("\n", i) + 1
+        close = re.compile(rf"^{re.escape(q)}@", re.M).search(s, start)
+        if not close:
+            raise Unparsable(f"the PowerShell here-string @{q} has no closing line {q}@")
+        if q == '"':
+            self.expanded(start, close.start())
+        out[-1] = " HERESTRING "
+        return close.end()
+
+    def heredoc(self, i: int, pending: list[tuple[str, bool, bool]], out: list[str]) -> int:
+        """At a POSIX '<<' (not '<<<'): read the delimiter word (the body is read at the end of
+        the line) and return the index after it."""
+        s, j = self.s, i + 2
+        strip_tabs = s.startswith("-", j)
+        j += strip_tabs
+        while j < self.n and s[j] in " \t":
+            j += 1
+        word: list[str] = []
+        k, quote = j, ""
+        while k < self.n and (quote or s[k] not in _WORD_END):
+            ch = s[k]
+            if quote:
+                if ch == quote:
+                    quote = ""
+                else:
+                    word.append(ch)
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "\\" and k + 1 < self.n:
+                k += 1
+                word.append(s[k])
+            else:
+                word.append(ch)
+            k += 1
+        delimiter = "".join(word)
+        if quote or not delimiter or "\n" in delimiter:
+            raise Unparsable("a here-document has no delimiter word")
+        expanded = not any(q in s[j:k] for q in "'\"\\")
+        pending.append((delimiter, strip_tabs, expanded))
+        out.append(f" << {shlex.quote(delimiter)} ")
+        return k
+
+    def bodies(self, i: int, pending: list[tuple[str, bool, bool]]) -> int:
+        """At the start of the line after here-document operators: skip their bodies, each up to
+        its closing line, and return the index after the last one."""
+        s = self.s
+        for delimiter, strip_tabs, expanded in pending:
+            start = i
+            while True:
+                if i >= self.n:
+                    raise Unparsable(f"the here-document '{delimiter}' has no closing line")
+                eol = s.find("\n", i)
+                eol = self.n if eol < 0 else eol
+                line = s[i:eol].rstrip("\r")
+                if (line.lstrip("\t") if strip_tabs else line) == delimiter:
+                    if expanded:
+                        self.expanded(start, i)
+                    i = eol + 1
+                    break
+                i = eol + 1
+        pending.clear()
+        return min(i, self.n)
+
+    def scan(self, i: int = 0, until_paren: bool = False) -> tuple[str, int]:
+        """The command text from ``i`` with bodies, here-strings and comments removed, substitutions
+        replaced by ``$SUBST`` and newlines by ';'. With ``until_paren``, stop at the ')' closing
+        a '$(' and return its index."""
+        s, out = self.s, []
+        pending: list[tuple[str, bool, bool]] = []
+        depth = 0
+        while i < self.n:
+            c = s[i]
+            if c == self.esc:
+                if s.startswith("\n", i + 1) or s.startswith("\r\n", i + 1):
+                    i += 2 if s[i + 1] == "\n" else 3  # line continuation
+                else:
+                    out.append(s[i:i + 2])
+                    i += 2
+            elif c in "'\"":
+                j = self.herestring(i, out)
+                if j is None and c == "'":
+                    j = self.single_quoted(i)
+                    out.append(s[i:j])
+                elif j is None:
+                    text, j = self.expanded(i + 1, self.n, closing='"')
+                    out.append(f'"{text}"')
+                i = j
+            elif s.startswith("$(", i):
+                i = self.substitution(i)
+                out.append(" $SUBST ")
+            elif c == "`" and not self.win:
+                i = self.backtick(i)
+                out.append(" $SUBST ")
+            elif c == "#" and (i == 0 or s[i - 1] in _COMMENT_AFTER):
+                while i < self.n and s[i] != "\n":
+                    i += 1
+            elif not self.win and s.startswith("<<<", i):
+                out.append("<<<")
+                i += 3
+            elif not self.win and s.startswith("<<", i):
+                i = self.heredoc(i, pending, out)
+            elif c == "\n":
+                out.append(" ; ")
+                i = self.bodies(i + 1, pending)
+            else:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    if until_paren and depth == 0:
+                        if pending:
+                            raise Unparsable(f"the here-document '{pending[0][0]}' has no body")
+                        return "".join(out), i
+                    depth = max(depth - 1, 0)
+                out.append(c)
+                i += 1
+        if until_paren:
+            raise Unparsable("a '$(' substitution is not closed")
+        if pending:
+            raise Unparsable(f"the here-document '{pending[0][0]}' has no body and no closing line")
+        return "".join(out), i
+
+
+def strip_heredocs(command: str, windows_syntax: bool = False) -> tuple[str, list[str]]:
+    """The command as the guard analyses it, and the commands substituted inside it.
+
+    Here-document bodies (``<<WORD``, ``<<-WORD``) and PowerShell here-strings (``@'...'@``,
+    ``@"..."@``) are removed: their text is data, never a redirection. When the shell expands
+    them (unquoted delimiter, ``@"``), the commands they substitute (``$(...)``, backticks) are
+    returned to be checked, as are those in double-quoted strings and in the command itself. A
+    quoted delimiter (``<<'EOF'``, ``<<"EOF"``, ``<<\\EOF``) makes the body plain text. The
+    redirection of the here-document (``cat > file <<'EOF'``) stays in the command. Comments are
+    dropped and newlines outside quotes become ';' (they separate commands).
+
+    Raises Unparsable when a body has no closing line, or a quote or a substitution is not closed.
+    """
+    scanner = _Scanner(command, windows_syntax)
+    text, _ = scanner.scan()
+    return text, scanner.nested
 
 
 def tokenize(command: str, windows_syntax: bool = False) -> list[str]:
@@ -132,6 +388,8 @@ def tokenize(command: str, windows_syntax: bool = False) -> list[str]:
     ``windows_syntax`` (PowerShell, cmd): the backslash is a path separator, not an
     escape character, so it is turned into '/' before POSIX tokenisation.
     Braces opening or closing a script block or command group become separators.
+    Comments are not recognised here (strip_heredocs drops them): shlex would also take a '#'
+    inside a word for one and drop the rest of the line.
     """
     if windows_syntax:
         command = command.replace("\\", "/")
@@ -141,6 +399,7 @@ def tokenize(command: str, windows_syntax: bool = False) -> list[str]:
     command = re.sub(r"\}(?=$|[\s;|&)])", " } ", command)
     lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         return list(lexer)
     except ValueError:
@@ -338,6 +597,18 @@ def check_bash(role: str, command: str, cwd: str | None, depth: int = 0,
             )
         return
 
+    # Here-document bodies, here-strings and comments are data: only the command text is analysed,
+    # and the commands substituted anywhere in it are checked on their own.
+    try:
+        command, substituted = strip_heredocs(command, windows_syntax)
+    except Unparsable as exc:
+        deny(f"Shell command blocked: {exc}, so the guard cannot tell which text is a command. "
+             "Write files with the Write tool." + FIX_HINT)
+    for inner in substituted:
+        if depth >= 3:
+            deny("Shell commands nested more than three levels cannot be checked." + FIX_HINT)
+        check_bash(role, inner, cwd, depth + 1, windows_syntax)
+
     # The step scripts belong to the orchestrator and the owner tools to the owner; a loop role
     # may only read the status and the approvals, or lint the task list.
     for m in HARNESS_SCRIPT.finditer(command):
@@ -431,6 +702,14 @@ def check_owner_shell(command: str, cwd: str | None, depth: int, windows_syntax:
         if any(w in lowered for w in (" > ", ">>", "git commit", "git add", "rm ", "mv ", "pip ")):
             deny("Shell command blocked: it would write inside a protected path, which is "
                  "read-only for every role (harness/project.json, protected_paths).")
+    try:
+        command, substituted = strip_heredocs(command, windows_syntax)
+    except Unparsable:
+        substituted = []  # analyse the raw text, as before here-documents were recognised
+    for inner in substituted:
+        if depth >= 3:
+            deny("Shell commands nested more than three levels cannot be checked.")
+        check_owner_shell(inner, cwd, depth + 1, windows_syntax)
     for seg in split_segments(tokenize(command, windows_syntax)):
         name, rest, targets, nested, _opaque = analyse_segment(seg, windows_syntax)
         if name == "git" and "-C" in rest:
@@ -572,6 +851,9 @@ def run() -> None:
         role = pathrules.effective_role(PROJECT_DIR, event.get("agent_type"), session_id)
     except ValueError as exc:
         deny(f"{exc} Failing closed.")
+    CALL.update(role=role, agent_type=event.get("agent_type"), tool=tool,
+                target=(tool_input.get("file_path") or tool_input.get("notebook_path")
+                        or tool_input.get("command") or "")[:300])
 
     if tool in WRITE_TOOLS:
         path = tool_input.get("file_path") or tool_input.get("notebook_path")

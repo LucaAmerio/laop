@@ -12,7 +12,9 @@ pass_gate       task=<gate id>          pass a gate (a "final" gate refuses whil
                                         decisions are open)
 unblock         task=<id>               back to todo, attempts reset, fresh base at next dispatch
 resume          task=<id>               back to todo, base and attempts kept
-ratify          qid=<question key>      accept a provisional decision of the resolver
+ratify          qid=<question key>      accept a provisional decision of the resolver; its entry
+                                        in the open-questions file is set to decided (commit it),
+                                        or a REMINDER says what to edit by hand
 override        qid=<question key> [note="..."]
                                         reject it: the task that resumed with it and every task
                                         built on it since go back to todo, with a steer note
@@ -55,7 +57,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import approvals  # noqa: E402
 import loop_core as L  # noqa: E402
 import statefile  # noqa: E402
-
 
 REFUSED = "REFUSED:"
 
@@ -140,7 +141,7 @@ def run(entry: dict) -> str:
     failed = [e for e in new_events if "owner action not applied:" in e]
     if failed:
         return f"{REFUSED} {action} not applied.\n" + "\n".join(failed)
-    return f"{action} applied.\n" + "\n".join(state["events"][-3:])
+    return f"{action} applied.\n" + "\n".join(new_events[-10:] or state["events"][-3:])
 
 
 if __name__ == "__main__":

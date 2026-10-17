@@ -285,6 +285,100 @@ class GuardTests(HarnessTest):
                                         capture_output=True, text=True).returncode, 0)
 
 
+UI_REVIEWER = {"reviewer": True, "allow_write": ["harness/verdicts/**", "harness/screenshots/**"],
+               "git_allow": ["status", "log", "diff", "show"]}
+# The verdict of Argus M1-021: the guard read "Display > Local axes" in the body as a redirection.
+VERDICT_BODY = ("VERDICT: PASS\n1. Fine.\n2. Unavailable state: when the index has no member_axes, "
+                "Display > Local axes is disabled; it's shown greyed.\n")
+
+
+class HeredocGuardTests(unittest.TestCase):
+    """Here-document bodies and here-strings are data; what they substitute, and where they are
+    redirected, is still checked; what cannot be delimited is blocked."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.r = Repo({"extra_roles": {**ANSWERS["extra_roles"], "ui-reviewer": UI_REVIEWER}})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.r.close()
+
+    def bash(self, command: str, agent: str = "ui-reviewer") -> tuple[int, str]:
+        return self.r.shell(command, agent=agent)
+
+    def ps(self, command: str, agent: str = "ui-reviewer") -> tuple[int, str]:
+        return self.r.tool("PowerShell", {"command": command}, agent=agent)
+
+    def test_quoted_heredoc_body_is_text(self):
+        root = self.r.root.as_posix()
+        for op in ("<<'EOF'", '<<"EOF"', "<<\\EOF", "<< 'EOF'"):
+            command = f'cd "{root}" && cat > harness/verdicts/M1-021_attempt1.md {op}\n{VERDICT_BODY}EOF'
+            code, err = self.bash(command)
+            self.assertEqual(code, 0, f"{op}: {err}")
+        code, err = self.bash(f"cat <<-'EOF' > harness/verdicts/v.md\n\t{VERDICT_BODY}\tEOF\n")
+        self.assertEqual(code, 0, err)
+        # the body may name harness scripts and contain $(...): it is not run
+        code, err = self.bash("cat > harness/verdicts/v.md <<'EOF'\nran python harness/step_verify.py; "
+                              "$(rm -rf src) > x\nEOF")
+        self.assertEqual(code, 0, err)
+
+    def test_heredoc_redirection_is_still_checked(self):
+        for target in ("src/verdict.md", "CLAUDE.md", "harness/state.json"):
+            code, err = self.bash(f"cat > {target} <<'EOF'\n{VERDICT_BODY}EOF")
+            self.assertEqual(code, 2, target)
+            self.assertIn("Shell write blocked", err)
+        self.assertEqual(self.bash(f"cat <<'EOF' | tee src/v.md\n{VERDICT_BODY}EOF")[0], 2)
+        # commands after the body are commands
+        self.assertEqual(self.bash(f"cat > harness/verdicts/v.md <<'EOF'\nx\nEOF\nrm -rf src")[0], 2)
+
+    def test_unquoted_heredoc_substitutions_are_commands(self):
+        for body in ("$(echo x > fuori.txt)", "`echo x > fuori.txt`", "$((1 + $(rm -rf src)))",
+                     "${X:-$(touch src/x)}"):
+            code, err = self.bash(f"cat > harness/verdicts/v.md <<EOF\nok {body}\nEOF")
+            self.assertEqual(code, 2, body)
+        # an unquoted body with '>' but no substitution is text
+        self.assertEqual(self.bash(f"cat > harness/verdicts/v.md <<EOF\n{VERDICT_BODY}EOF")[0], 0)
+
+    def test_undelimited_heredoc_is_blocked(self):
+        for command in ("cat > harness/verdicts/v.md <<'EOF'\nVERDICT: PASS\n",
+                        "cat > harness/verdicts/v.md <<'EOF'",
+                        "cat > harness/verdicts/v.md <<'EOF'\nVERDICT: PASS\n EOF\n",
+                        "cat > harness/verdicts/v.md <<EOF\n$(echo x\nEOF",
+                        "cat > harness/verdicts/v.md << ''\nx\n\n"):
+            code, err = self.bash(command)
+            self.assertEqual(code, 2, command)
+        self.assertIn("no closing line", self.bash("cat > harness/verdicts/v.md <<'EOF'\nx\n")[1])
+
+    def test_quotes_herestrings_and_command_substitution(self):
+        self.assertEqual(self.bash('echo "Display > Local axes" > harness/verdicts/v.md')[0], 0)
+        self.assertEqual(self.bash("echo 'a > b' >> harness/verdicts/v.md")[0], 0)
+        self.assertEqual(self.bash('cat <<< "Display > Local axes" > harness/verdicts/v.md')[0], 0)
+        self.assertEqual(self.bash('cat <<< "x" > src/v.md')[0], 2)
+        self.assertEqual(self.bash('echo "$(echo x > src/v.md)"')[0], 2)
+        # a builder's commit message, the usual heredoc in a substitution
+        msg = "git commit -m \"$(cat <<'EOF'\nM1-001: fix (1) it's > here\nEOF\n)\""
+        self.assertEqual(self.bash(msg, agent="builder")[0], 0)
+
+    def test_newlines_and_hash_separate_commands(self):
+        # before 0.4.2 the guard read both as a single harmless echo
+        self.assertEqual(self.bash("echo hi\nrm -rf src")[0], 2)
+        self.assertEqual(self.bash("echo x#; rm -rf src")[0], 2)
+        self.assertEqual(self.bash("echo x # > src/v.md is a comment")[0], 0)
+
+    def test_powershell_herestrings(self):
+        body = VERDICT_BODY.replace("\n", "\r\n")
+        for q in ("'", '"'):
+            code, err = self.ps(f"@{q}\r\n{body}{q}@ | Set-Content harness/verdicts/v.md")
+            self.assertEqual(code, 0, f"{q}: {err}")
+            self.assertEqual(self.ps(f"@{q}\r\n{body}{q}@ | Set-Content src/v.md")[0], 2, q)
+            self.assertEqual(self.ps(f"@{q}\r\n{body}")[0], 2, q)  # no closing line
+        self.assertEqual(self.ps("@\"\nok $(Remove-Item src -Recurse)\n\"@ | Set-Content "
+                                 "harness/verdicts/v.md")[0], 2)
+        self.assertEqual(self.ps("@'\nok $(Remove-Item src -Recurse)\n'@ | Set-Content "
+                                 "harness/verdicts/v.md")[0], 0)
+
+
 # ============================================================================ loop
 
 
@@ -306,6 +400,23 @@ class LoopTests(HarnessTest):
         out = r.step("step_record")
         self.assertIn("is now 'done'", out)
         self.assertIn("LOOP FINISHED", r.step("step_next"))
+
+    def test_halt_names_a_verdict_the_guard_blocked(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: b")
+        r.claim("M1-001")
+        r.step("step_verify")
+        code, _ = r.shell("cat > src/verdict.md <<'EOF'\nVERDICT: PASS\nEOF", agent="evaluator")
+        self.assertEqual(code, 2)
+        out = r.step("step_record")
+        self.assertIn("NO VALID VERDICT", out)
+        self.assertIn("The guard blocked 1 call(s) of the evaluator", out)
+        out = r.step("step_record")
+        self.assertIn("HALTED", out)
+        self.assertIn("src/verdict.md", out)
+        self.assertIn("outside the write allowlist", out)
 
     def test_protected_path_halts(self):
         r = self.r
@@ -856,6 +967,106 @@ class ResolverTests(HarnessTest):
         self.assertEqual(st["ledger"]["D1"]["status"], "warmup")
         self.assertIn("option 2", (r.root / "harness" / "STEER_M1-001.md").read_text())
 
+    # ---------------------------------------------------------------- open-questions entry
+
+    ENTRY = ("# Q\n\n## Q0: before\nStatus: provisional (resolver, 2026-10-01)\n\n"
+             "## Q1: which?\n{status}\n**Decision (owner):** pending ratification.\n\nDecision: option 1\n\n"
+             "## Q2: after\nStatus: provisional (resolver, 2026-10-02)\n**Decision (owner):** pending ratification.\n")
+
+    def provisional(self) -> None:
+        """Q1 decided provisionally; the builder applied it and recorded the entry."""
+        r = self.r
+        r.owner("trust", "category=D1", "level=auto")
+        self.resolve("RESOLUTION: ANSWER\nCategory: D1\nDecision: option 1\n", "CHALLENGE: AGREE")
+        r.step("step_next")
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        today = time.strftime("%Y-%m-%d")
+        self.assertIn(f"\nStatus: provisional (resolver, {today})\n**Decision (owner):** pending ratification.\n",
+                      prompt)
+
+    def finish(self) -> None:
+        r = self.r
+        r.claim("M1-001")
+        self.assertIn("REVIEW", r.step("step_verify"))
+        (r.root / r.state()["current"]["verdict"]).write_text("VERDICT: PASS\n")
+        r.step("step_record")
+
+    def test_ratify_rewrites_the_entry_and_only_it(self):
+        r = self.r
+        self.provisional()
+        r.commit_file("docs/open_questions.md",
+                      self.ENTRY.format(status="Status: provisional (resolver, 2026-10-10)"), "M1-001: Q1")
+        self.finish()
+        out = r.owner("ratify", "qid=Q1")
+        self.assertIn("updated docs/open_questions.md, entry Q1", out)
+        self.assertIn("Commit it", out)
+        today = time.strftime("%Y-%m-%d")
+        expected = self.ENTRY.format(
+            status=f"Status: decided (ratified by the owner, {today}; provisional decision of the resolver, "
+                   "2026-10-10)").replace(
+            "## Q1: which?\nStatus: decided", "## Q1: which?\nStatus: decided", 1)
+        expected = expected.replace(
+            "**Decision (owner):** pending ratification.\n\nDecision: option 1",
+            f"**Decision (owner):** ratified, {today}: the resolver's decision below, with the challenger's "
+            "amendments (if any).\n\nDecision: option 1", 1)
+        self.assertEqual((r.root / "docs" / "open_questions.md").read_text(), expected)
+        self.assertNotIn("docs/open_questions.md", git(r.root, "diff", "--cached", "--name-only"))
+        self.assertIn("docs/open_questions.md", git(r.root, "status", "--porcelain"))  # not committed
+
+    def test_ratify_without_the_expected_lines_only_reminds(self):
+        r = self.r
+        self.provisional()
+        text = "# Q\n## Q1: which?\nProvisionally decided by the resolver: option 1.\n"
+        r.commit_file("docs/open_questions.md", text, "M1-001: Q1")
+        self.finish()
+        out = r.owner("ratify", "qid=Q1")
+        self.assertIn("applied", out)
+        self.assertIn("REMINDER: edit the entry of Q1 in docs/open_questions.md", out)
+        self.assertEqual((r.root / "docs" / "open_questions.md").read_text(), text)
+        self.assertEqual(r.state()["provisional"]["Q1"]["status"], "ratified")
+
+    def test_ratify_queued_in_flight_is_applied_as_an_owner_write(self):
+        r = self.r
+        self.provisional()
+        out = r.owner("ratify", "qid=Q1")  # the builder is still on M1-001
+        self.assertIn("queued", out)
+        r.commit_file("docs/open_questions.md",
+                      self.ENTRY.format(status="Status: provisional (resolver, 2026-10-10)"), "M1-001: Q1")
+        r.commit_file("src/b.py", "B = 2\n")
+        self.finish()  # step_verify applies the queue: the edit is not the task's work
+        text = (r.root / "docs" / "open_questions.md").read_text()
+        self.assertIn("## Q1: which?\nStatus: decided (ratified by the owner", text)
+        writes = json.loads((r.root / "harness" / "owner_writes.json").read_text())
+        self.assertIn("docs/open_questions.md", writes["paths"])
+        self.assertEqual(r.state()["tasks"]["M1-001"]["status"], "done")
+        self.assertTrue(any("updated docs/open_questions.md" in e for e in r.state()["events"]))
+
+    def test_final_gate_refuses_a_stale_entry(self):
+        r = self.r
+        self.provisional()
+        stale = "# Q\n## Q1: which?\nStatus: provisional, resolver\n**Decision (owner):** pending ratification.\n"
+        r.commit_file("docs/open_questions.md", stale, "M1-001: Q1")
+        self.finish()
+        self.assertIn("REMINDER", r.owner("ratify", "qid=Q1"))
+        out = r.owner("pass_gate", "task=G9")
+        self.assertIn("REFUSED", out)
+        self.assertIn("pending ratification for Q1", out)
+        r.commit_file("docs/open_questions.md", "# Q\n## Q1: which?\nStatus: decided (owner)\n", "owner: Q1")
+        self.assertIn("applied", r.owner("pass_gate", "task=G9"))
+
+    def test_override_asks_for_the_decided_status_and_the_gate_checks_it(self):
+        r = self.r
+        self.provisional()
+        r.commit_file("docs/open_questions.md",
+                      self.ENTRY.format(status="Status: provisional (resolver, 2026-10-10)"), "M1-001: Q1")
+        self.finish()
+        r.owner("override", "qid=Q1", "note=Use option 2.")
+        steer = (r.root / "harness" / "STEER_M1-001.md").read_text()
+        self.assertIn(f"'Status: decided (owner, {time.strftime('%Y-%m-%d')})'", steer)
+        self.assertIn("pending ratification.", steer)
+        r.set_state(lambda s: s["tasks"]["M1-001"].update(status="done"))  # reworked, entry not updated
+        self.assertIn("pending ratification for Q1", r.owner("pass_gate", "task=G9"))
+
     def test_owner_action_question_is_not_resolved(self):
         r = self.r
         r.step("step_next")
@@ -887,6 +1098,79 @@ class AdviseModeTests(ResolverTests):
     test_override_reopens_the_task_and_demotes_the_category = None
     test_warmup_category_goes_to_the_owner_with_the_recommendation = None
     test_reserved_category_stays_with_the_owner = None  # advise: every category is the owner's
+    test_ratify_rewrites_the_entry_and_only_it = None  # advise: nothing is decided provisionally
+    test_ratify_without_the_expected_lines_only_reminds = None
+    test_ratify_queued_in_flight_is_applied_as_an_owner_write = None
+    test_final_gate_refuses_a_stale_entry = None
+    test_override_asks_for_the_decided_status_and_the_gate_checks_it = None
+
+
+class OpenQuestionEntryTests(unittest.TestCase):
+    """ratify_entry on files of other shapes: wrapped lines, line endings, other layouts."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SKILL / "core" / "harness"))
+        import loop_core
+        self.L = loop_core
+        self.tmp = Path(tempfile.mkdtemp(prefix="laop_oq_"))
+        self._oq = loop_core.OPEN_QUESTIONS
+        loop_core.OPEN_QUESTIONS = self.tmp / "open_questions.md"
+        self.today = time.strftime("%Y-%m-%d")
+
+    def tearDown(self):
+        self.L.OPEN_QUESTIONS = self._oq
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def edit(self, data: bytes, key: str = "Q3") -> tuple[list[str], bytes]:
+        self.L.OPEN_QUESTIONS.write_bytes(data)
+        out = self.L.ratify_entry(key)
+        return out, self.L.OPEN_QUESTIONS.read_bytes()
+
+    def test_wrapped_and_bold_status_lines(self):
+        data = (b"## Q3: x\n- **Status:** provisional\n  (resolver,\n  2026-10-09), see below\n"
+                b"**Decision (owner):**\npending ratification.\n## Q4: y\nStatus: provisional (resolver, 2026-10-09)\n")
+        out, new = self.edit(data)
+        self.assertTrue(out[0].startswith("updated "), out)
+        self.assertEqual(len(out), 1, out)
+        text = new.decode()
+        self.assertIn(f"- **Status:** decided (ratified by the owner, {self.today}; provisional decision of "
+                      "the resolver, 2026-10-09), see below\n", text)
+        self.assertIn(f"**Decision (owner):** ratified, {self.today}:", text)
+        self.assertTrue(text.endswith("## Q4: y\nStatus: provisional (resolver, 2026-10-09)\n"))
+
+    def test_crlf_line_endings_are_kept(self):
+        data = (b"# Q\r\n\r\n## Q3: x\r\nStatus: provisional (resolver, 2026-10-09)\r\n"
+                b"**Decision (owner):** pending ratification.\r\n\r\n## Q4: y\r\nStatus: provisional (resolver, 2026-10-09)\r\n")
+        out, new = self.edit(data, "Q3@M1-002#2")  # a repeated id: the entry of Q3
+        self.assertTrue(out[0].startswith("updated "), out)
+        self.assertEqual(new.count(b"\r\n"), data.count(b"\r\n"))
+        self.assertNotIn(b"\n", new.replace(b"\r\n", b""))
+        self.assertTrue(new.endswith(b"## Q4: y\r\nStatus: provisional (resolver, 2026-10-09)\r\n"))
+
+    def test_other_layouts_get_the_reminder_and_no_edit(self):
+        for data in (b"| Q3 | provisional (resolver, 2026-10-09) |\n",  # a table, no heading
+                     b"## Q3 x\nStatus: provisional (resolver, 2026-10-09)\n",  # no colon after the id
+                     b"## Q3: x\nStatus: provisional\n",  # no date
+                     b"## Q3: a\n## Q3: b\nStatus: provisional (resolver, 2026-10-09)\n"):  # two entries
+            out, new = self.edit(data)
+            self.assertEqual(new, data)
+            self.assertTrue(out[0].startswith("REMINDER: edit the entry of Q3"), out)
+        self.L.OPEN_QUESTIONS.unlink()
+        self.assertTrue(self.L.ratify_entry("Q3")[0].startswith("REMINDER"))
+
+    def test_status_rewritten_but_other_stale_text_reminds(self):
+        out, new = self.edit(b"## Q3: x\nStatus: provisional (resolver, 2026-10-09)\nDecision: pending ratification\n")
+        self.assertTrue(out[0].startswith("updated "))
+        self.assertTrue(out[1].startswith("REMINDER"), out)
+
+    def test_stale_entries_covers_ratified_and_overridden(self):
+        self.L.OPEN_QUESTIONS.write_text("## Q1: a\nStatus: provisional (resolver, 2026-10-09)\n"
+                                         "## Q2: b\n**Decision (owner):** pending ratification.\n"
+                                         "## Q3: c\nStatus: decided (owner, 2026-10-10)\n"
+                                         "## Q4: d\nStatus: provisional (resolver, 2026-10-09)\n")
+        state = {"provisional": {"Q1": {"status": "ratified"}, "Q2@T#2": {"status": "overridden"},
+                                 "Q3": {"status": "ratified"}, "Q4": {"status": "open"}}}
+        self.assertEqual(self.L.stale_entries(state), ["Q1", "Q2"])
 
 
 class TrustLedgerTests(unittest.TestCase):

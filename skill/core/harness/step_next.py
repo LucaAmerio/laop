@@ -156,7 +156,11 @@ def run(doc: dict, state: dict) -> str:
     steer = L.consume_steer(task["id"])
     resolution, resolution_by = "", st.pop("pending_resolution_by", "provisional")
     if st.get("pending_resolution"):
-        resolution = L.resolution_text(L.REPO / st.pop("pending_resolution"))
+        rel = st.pop("pending_resolution")
+        if resolution_by == "provisional" and any(
+                p.get("file") == rel and p.get("status") == "ratified" for p in state["provisional"].values()):
+            resolution_by = "ratified"  # the owner ratified it before this dispatch
+        resolution = L.resolution_text(L.REPO / rel)
     L.PROMPT_FILE.write_text(L.build_prompt(doc, task, token_line, steer, resolution, resolution_by,
                                             interrupted=st.pop("interrupted", "")),
                              encoding="utf-8")

@@ -83,7 +83,8 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
         state["current"] = None
         return L.halt(doc, state, f"{task['id']} modified protected paths: " + "; ".join(violations[:10]))
 
-    if L.file_hash(L.OPEN_QUESTIONS) != current.get("open_questions_hash"):
+    if (L.file_hash(L.OPEN_QUESTIONS) != current.get("open_questions_hash")
+            and C.OPEN_QUESTIONS_REL not in owner_files):
         L.event(state, f"{task['id']} changed {C.OPEN_QUESTIONS_REL}")
 
     claim = L.load_json(L.CLAIM_FILE) if L.CLAIM_FILE.exists() else None

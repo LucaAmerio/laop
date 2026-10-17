@@ -467,6 +467,32 @@ def halt(doc: dict, state: dict, reason: str) -> str:
                     "and end your turn.", doc, state)
 
 
+GUARD_BLOCKS = HARNESS / "logs" / "guard_blocks.jsonl"
+
+
+def guard_blocks_note(agent: str, since: float) -> str:
+    """The calls of subagent ``agent`` the guard blocked since ``since`` (the guard records them
+    in harness/logs/guard_blocks.jsonl), as a sentence for a step message; empty if none."""
+    blocks = []
+    try:
+        for line in GUARD_BLOCKS.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if entry.get("agent_type") == agent and entry.get("time", 0) >= since:
+                blocks.append(entry)
+    except OSError:
+        return ""
+    if not blocks:
+        return ""
+    last = blocks[-1]
+    target = " ".join(str(last.get("target", "")).split())[:160]
+    message = str(last.get("message", "")).split(" Do not work around this guard")[0]
+    return (f" The guard blocked {len(blocks)} call(s) of the {agent} meanwhile; the last, "
+            f"{last.get('tool', '?')} '{target}': {message} (harness/logs/guard_blocks.jsonl)")
+
+
 def progress(state: dict) -> str:
     counts: dict[str, int] = {}
     for st in state["tasks"].values():
@@ -770,13 +796,23 @@ def build_prompt(doc: dict, task: dict, token_line: str, steer: str, resolution:
             "plus any owner note in the steering note below. Apply it. Record it in "
             f"{C.OPEN_QUESTIONS_REL} under the question as 'Status: decided (owner, "
             f"{dt.date.today()})' with the decision text, in your commit:\n\n{resolution}\n")
+    elif resolution and resolution_by == "ratified":
+        resolution_block = (
+            "\nYour question was answered by the resolver and confirmed by the challenger, and the "
+            "owner has already ratified the decision. Apply it and every amendment of the "
+            f"challenger (they are part of the decision). Record it in {C.OPEN_QUESTIONS_REL}, in "
+            "the entry of the question, with the decision text and the line 'Status: decided "
+            f"(ratified by the owner, {dt.date.today()})', in your commit:\n\n{resolution}\n")
     elif resolution:
         resolution_block = (
             "\nYour question was answered by the resolver and confirmed by the challenger, on the "
             "owner's behalf and provisionally (the owner ratifies it later). Apply the decision and "
             "every amendment of the challenger (they are part of the decision). Record it in "
-            f"{C.OPEN_QUESTIONS_REL} under the question as 'Status: provisional (resolver, "
-            f"{dt.date.today()})' with the decision text, in your commit:\n\n{resolution}\n")
+            f"{C.OPEN_QUESTIONS_REL}, in the entry of the question (its '## <question id>:' "
+            "section), with the decision text and these two lines exactly as written, each on a "
+            "line of its own, unwrapped (the owner's ratification rewrites them; write no other "
+            f"status line):\n\n{PROVISIONAL_STATUS.format(date=dt.date.today())}\n"
+            f"{PENDING_DECISION}\n\nCommit it with your work. The decision:\n\n{resolution}\n")
     checks = json.dumps([shown_check(c) for c in C.GLOBAL_CHECKS + task["acceptance"]], indent=2)
     refs = "\n".join(f"- {r}" for r in task.get("spec_refs", [])) or "- (none)"
     return (
@@ -1045,10 +1081,100 @@ def question_lines(state: dict) -> str:
             "Decide each with harness/owner_tools.py decide.")
 
 
+# --------------------------------------------------------------------------- open-questions entries
+
+
+# The fixed lines the builder writes for a provisional decision (build_prompt) and that ratify
+# rewrites. A status line may wrap onto continuation lines; optional bold markers are kept.
+PROVISIONAL_STATUS = "Status: provisional (resolver, {date})"
+PENDING_DECISION = "**Decision (owner):** pending ratification."
+_STATUS_RE = re.compile(r"(\*\*)?Status:(\*\*)?\s+provisional\s+\(resolver,\s+(\d{4}-\d{2}-\d{2})\)")
+_PENDING_RE = re.compile(r"\*\*Decision\s+\(owner\):\*\*\s+pending\s+ratification\.")
+_STALE_RE = re.compile(r"Status:(?:\*\*)?\s+provisional|pending\s+ratification", re.I)
+
+
+def question_key(key: str) -> str:
+    """The question id of a provisional key (``Q3`` or ``Q3@M1-002#2`` for a repeated id)."""
+    return key.split("@", 1)[0]
+
+
+def entry_span(text: str, qid: str) -> tuple[int, int] | None:
+    """Start and end offsets of the entry of ``qid`` in the open-questions file: from its
+    ``## <qid>:`` heading to the next ``## `` heading. None when there is not exactly one."""
+    heads = [m.start() for m in re.finditer(rf"(?m)^##[ \t]+{re.escape(qid)}:", text)]
+    if len(heads) != 1:
+        return None
+    nxt = re.compile(r"(?m)^##[ \t]").search(text, heads[0] + 2)
+    return heads[0], nxt.start() if nxt else len(text)
+
+
+def stale_entries(state: dict) -> list[str]:
+    """The questions that state.json records as ratified or overridden whose entry in the
+    open-questions file still says provisional or pending ratification."""
+    closed = sorted({question_key(k) for k, p in state.get("provisional", {}).items()
+                     if p.get("status") in ("ratified", "overridden")})
+    if not closed or not OPEN_QUESTIONS.exists():
+        return []
+    text = OPEN_QUESTIONS.read_text(encoding="utf-8", errors="replace")
+    stale = []
+    for qid in closed:
+        span = entry_span(text, qid)
+        if span and _STALE_RE.search(text, *span):
+            stale.append(qid)
+    return stale
+
+
+def ratify_entry(key: str) -> list[str]:
+    """Record the owner's ratification of ``key`` in the open-questions file (tracked, the durable
+    record): the provisional status line(s) and the pending decision line of its entry are
+    rewritten in place, line endings kept. Nothing is guessed: when the entry or the lines are not
+    there, nothing is edited and the result is a REMINDER. Returns the lines to report; the first
+    starts with "updated " when the file was edited. The owner commits it, never the tool."""
+    qid, rel = question_key(key), C.OPEN_QUESTIONS_REL
+    today = dt.date.today().isoformat()
+    remind = (f"REMINDER: edit the entry of {qid} in {rel} by hand: set its status to 'Status: decided "
+              f"(ratified by the owner, {today})' and its owner decision to ratified")
+    try:
+        with open(OPEN_QUESTIONS, encoding="utf-8", newline="") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError):
+        return [f"{remind} ({rel} could not be read)."]
+    span = entry_span(text, qid)
+    if not span:
+        return [f"{remind} (no single '## {qid}:' heading found)."]
+    start, end = span
+    body = text[start:end]
+    body, n_status = _STATUS_RE.subn(
+        lambda m: (f"{m[1] or ''}Status:{m[2] or ''} decided (ratified by the owner, {today}; "
+                   f"provisional decision of the resolver, {m[3]})"), body)
+    if not n_status:
+        return [f"{remind} (no 'Status: provisional (resolver, <date>)' line in the entry)."]
+    body, n_pending = _PENDING_RE.subn(
+        f"**Decision (owner):** ratified, {today}: the resolver's decision below, with the "
+        "challenger's amendments (if any).", body)
+    with open(OPEN_QUESTIONS, "w", encoding="utf-8", newline="") as f:
+        f.write(text[:start] + body + text[end:])
+    out = [f"updated {rel}, entry {qid}: {n_status} status line(s)"
+           + (f" and {n_pending} owner decision line(s)" if n_pending else "")
+           + " set to ratified. Commit it (the tool does not commit)."]
+    if _STALE_RE.search(body):
+        out.append(f"REMINDER: the entry of {qid} in {rel} still says provisional or pending "
+                   "ratification elsewhere: edit it by hand.")
+    return out
+
+
+def record_owner_write(state: dict, rel: str) -> None:
+    """Record a file an owner action wrote in the working tree (as the guard does for the owner's
+    own edits), so that the task in flight is not charged with it."""
+    if state.get("current") or state.get("loop_active"):
+        statefile.update(OWNER_WRITES_FILE, lambda d: d.update(
+            paths=sorted(set(d.get("paths", [])) | {rel})))
+
+
 # --------------------------------------------------------------------------- owner actions
 
 
-OWNER_ACTIONS = ("pass_gate", "unblock", "resume", "owner_commit", "foreign_commit", "allow_path",
+OWNER_ACTIONS =("pass_gate", "unblock", "resume", "owner_commit", "foreign_commit", "allow_path",
                  "clear_halt", "release", "ratify", "override", "decide", "trust")
 DECIDE_VERDICTS = ("agree", "amend", "differ")
 TRUST_LEVELS = ("owner", "warmup", "auto")
@@ -1099,6 +1225,11 @@ def owner_action_problem(doc: dict, state: dict, a: dict) -> str:
         if task.get("final") and open_provisional(state):
             return (f"{task_id} is the final gate: ratify or override the provisional decisions first "
                     f"({', '.join(sorted(open_provisional(state)))}).")
+        stale = stale_entries(state) if task.get("final") else []
+        if stale:
+            return (f"{task_id} is the final gate: {C.OPEN_QUESTIONS_REL} still says provisional or "
+                    f"pending ratification for {', '.join(stale)}, closed by the owner. Update those "
+                    "entries ('Status: decided ...'), commit, then pass the gate.")
     elif action in ("owner_commit", "foreign_commit"):
         if not a.get("commit"):
             return f"{action}: set commit=<sha>."
@@ -1182,6 +1313,13 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
             prov.update(status="ratified", closed=now())
             ledger_record(state, prov.get("category", ""), qid, prov["task"], "ratified")
             event(state, f"owner ratified provisional decision {qid}")
+            report = ratify_entry(qid)
+            if report[0].startswith("updated "):
+                record_owner_write(state, C.OPEN_QUESTIONS_REL)
+            for line in report:
+                event(state, line)
+            if state.get("current") and any(x.startswith("REMINDER") for x in report):
+                notify(f"{qid} ratified", "\n".join(report))  # applied from the queue: the owner is away
         else:
             ledger_record(state, prov.get("category", ""), qid, prov["task"], "overridden")
             # the task that resumed with the decision, and every task built on it since
@@ -1198,7 +1336,10 @@ def apply_owner_action(doc: dict, state: dict, a: dict) -> str:
                     + (f"Owner's decision: {note}\n" if note else "See the owner's decision in "
                        f"{C.OPEN_QUESTIONS_REL}.\n")
                     + "Rework what this task built on the provisional decision accordingly, and update "
-                      f"the entry of {qid} in {C.OPEN_QUESTIONS_REL}.\n", encoding="utf-8")
+                      f"the entry of {question_key(qid)} in {C.OPEN_QUESTIONS_REL}: replace its "
+                      f"'Status: provisional (resolver, <date>)' line with 'Status: decided (owner, "
+                      f"{dt.date.today()})' and its line '{PENDING_DECISION}' with "
+                      "'**Decision (owner):** ' and the owner's decision.\n", encoding="utf-8")
             prov.update(status="overridden", closed=now(), reopened=reopened)
             event(state, f"owner overrode {qid}; reopened {', '.join(reopened)}")
     elif action == "decide":

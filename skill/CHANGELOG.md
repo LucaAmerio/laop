@@ -1,6 +1,56 @@
 # laop changelog
 
-## Unreleased
+## 0.4.2 (2026-10-17)
+
+- The guard reads here-document bodies as text. Before, it parsed them as shell: a verdict written
+  with `cat > harness/verdicts/<task>.md <<'EOF'` whose text contained `Display > Local axes` was
+  blocked as a write to `Local`, outside the reviewer's allowlist (Argus M1-021 halted twice). Now
+  (`strip_heredocs`), before the analysis:
+  - the bodies of `<<'EOF'`, `<<"EOF"`, `<<\EOF` and `<<-` are removed: no redirection, no command;
+  - in the bodies of `<<EOF` (expanded) the substituted commands, `$(...)` and backticks, are
+    still checked as commands, also inside `$((...))` and `${...}`;
+  - the same for PowerShell here-strings: `@'...'@` is text, in `@"..."@` the `$(...)` are checked;
+  - the redirection of the here-document (`cat > file <<'EOF'`) is checked as before;
+  - fail closed: a here-document or here-string without its closing line, a quote or a
+    substitution not closed is blocked ("... has no closing line").
+  Here-strings `<<<` and `>` inside quotes were already read correctly; tests now cover them.
+- Three ways a loop role could get a write past the guard, found while fixing it, are closed:
+  a newline did not separate commands (`echo hi` + newline + `rm -rf src` was read as one `echo`);
+  a `#` inside a word started a comment (`echo x#; rm -rf src`: the `rm` was dropped); a `$(...)`
+  inside double quotes was not checked (`echo "$(rm -rf src)"`). The guard now drops comments only
+  at the start of a word, splits commands at newlines and checks every substituted command.
+- The guard records each blocked call of a loop role in `harness/logs/guard_blocks.jsonl` (last
+  200). When the reviewer leaves no valid verdict, `step_record` says how many of its calls the
+  guard blocked since the review began and the last one, in the retry message and in the HALT; so
+  does `step_resolve` for the resolver and the challenger. Before, telling "did not write the file"
+  from "the guard refused the write" required reading the subagents' transcripts.
+- Reviewer prompts: the verdict (resolution) file is written with the Write tool, never through
+  Bash; the reviewer waits for the result of the Write before its final reply, never in the same
+  message, rewrites it if it failed, and never replies with a verdict that is not in the file.
+  Core files: `resolver.md`; `challenger.md` appends its section with the Edit tool (its tools are
+  now Read, Glob, Grep, Bash, Edit). Templates (new projects; existing ones keep their agent
+  files): `evaluator.md`, `optional/ui-reviewer.md`.
+
+## 0.4.1 (2026-10-16)
+
+- `ratify` updates the tracked open-questions file, the only durable record of the decision. Before,
+  it changed only state.json (git-ignored): the entry kept saying "provisional" and "pending
+  ratification", STATUS.md showed nothing pending, and the final gate passed the mismatch along.
+  Now, in the entry of the qid (from its `## <qid>:` heading to the next `## `), every
+  `Status: provisional (resolver, <date>)` (also wrapped) becomes `Status: decided (ratified by the
+  owner, <today>; provisional decision of the resolver, <date>)` and `**Decision (owner):** pending
+  ratification.` becomes `**Decision (owner):** ratified, <today>: ...`. Line endings are kept, the
+  owner commits. When the entry or the status line is not found (another layout), nothing is edited
+  and a `REMINDER` names the file and the qid. A ratify queued while a task is in flight is applied
+  by the step script the same way, and the file is recorded in `owner_writes.json`, so it does not
+  count against the task.
+- The dispatch prompt of a provisional decision gives the builder the two exact lines to write; a
+  decision the owner ratified before the dispatch is recorded as decided at once.
+- `override`'s steer note asks the reopened task for `Status: decided (owner, <date>)` in place of
+  the two provisional lines.
+- `pass_gate` on a `final` gate refuses while the entry of a ratified or overridden decision still
+  says provisional or pending ratification.
+- New projects: the open-questions file's header names the `## Qn: <title>` heading.
 
 - `doctor` reports `UPGRADE AVAILABLE` when the installed core files differ from the skill's, also
   at the same version (unreleased changes). `/laop brief` runs doctor first and upgrades before the
