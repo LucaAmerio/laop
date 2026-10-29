@@ -51,6 +51,7 @@ harness/*.lock
 harness/*.tmp
 AGENT_STOP
 AGENT_SOFT_STOP
+AGENT_EMERGENCY_STOP
 """.strip()
 
 #: What the analyst writes and the planner must obey (harness/approvals.py).

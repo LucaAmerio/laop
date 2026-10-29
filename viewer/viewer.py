@@ -21,8 +21,8 @@ phase, blocked tasks and why, provisional decisions, queued owner actions, event
 the commits, and the time spent on each task.
 
 Read-only except for the stop files: the only files of a repository the viewer writes are
-AGENT_STOP and AGENT_SOFT_STOP at its root (the "Soft stop", "Stop now" and "Clear stops" buttons, per
-repository or for all of them from the overview). Otherwise it writes only its list of repositories
+AGENT_SOFT_STOP, AGENT_STOP and AGENT_EMERGENCY_STOP at its root (the "Soft stop", "Stop",
+"Emergency stop" and "Clear stops" buttons, per repository or for all of them from the overview). Otherwise it writes only its list of repositories
 and the snapshot you ask for, and takes no lock (state.json is written atomically, so a read never
 sees half a file). Every other owner action is shown as the ``owner_tools.py`` command to copy.
 
@@ -85,7 +85,7 @@ MAX_FILE_BYTES = 1_000_000
 LOG_TAIL_LINES = 400
 COMMITS = 60
 #: Stop files the page may create or remove at a repository root.
-STOP_FILES = {"hard": "AGENT_STOP", "soft": "AGENT_SOFT_STOP"}
+STOP_FILES = {"soft": "AGENT_SOFT_STOP", "hard": "AGENT_STOP", "emergency": "AGENT_EMERGENCY_STOP"}
 
 #: Files the page may open, relative to the repository (open questions and principles are added
 #: from project.json).
@@ -177,7 +177,7 @@ class Repo:
         return [h / "state.json", h / "tasks.json", h / "project.json", h / "roles.json", h / "step.lock",
                 h / "owner_queue.json", h / "claim.json", h / "logs" / "guard_heartbeat.json",
                 h / "logs" / "loop.log", h / "verdicts", h / "resolutions",
-                self.root / "AGENT_STOP", self.root / "AGENT_SOFT_STOP", self.root / self.questions_rel(),
+                *(self.root / name for name in STOP_FILES.values()), self.root / self.questions_rel(),
                 self.root / ".git" / "logs" / "HEAD", self.root / ".git" / "HEAD"]
 
     def etag(self) -> str:
@@ -252,8 +252,9 @@ class Repo:
         return next((d for d in snap["decisions"] if d["kind"] == kind and d["id"] == item_id), None)
 
     def set_stop(self, kind: str | None) -> None:
-        """Create AGENT_STOP ("hard") or AGENT_SOFT_STOP ("soft") at the repository root, or
-        remove both (None): the only files of a repository the viewer writes."""
+        """Create AGENT_SOFT_STOP ("soft"), AGENT_STOP ("hard") or AGENT_EMERGENCY_STOP
+        ("emergency") at the repository root, or remove all three (None): the only files of a
+        repository the viewer writes."""
         if kind is None:
             for name in STOP_FILES.values():
                 (self.root / name).unlink(missing_ok=True)
@@ -353,8 +354,7 @@ class Repo:
             "questions_file": self.questions_rel(),
             "queue": queue.get("actions", []) if isinstance(queue, dict) else [],
             "claim": claim if isinstance(claim, dict) else None,
-            "stops": {"hard": (self.root / "AGENT_STOP").exists(),
-                      "soft": (self.root / "AGENT_SOFT_STOP").exists()},
+            "stops": {kind: (self.root / name).exists() for kind, name in STOP_FILES.items()},
             "step_lock_age": self.age(self.h / "step.lock"),
             "heartbeat": heartbeat if isinstance(heartbeat, dict) else None,
             "files": files,
@@ -1174,10 +1174,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 ok = self.registry.remove(str(body.get("id", "")))
                 self.send_json(200 if ok else 404, {"ok": ok})
             elif url.path == "/api/stop":
-                # {"id": <repo id> or "all", "kind": "hard" | "soft" | null (remove both)}
+                # {"id": <repo id> or "all", "kind": "soft" | "hard" | "emergency" | null (remove all)}
                 kind = body.get("kind")
                 if kind is not None and kind not in STOP_FILES:
-                    self.send_json(400, {"error": "kind must be hard, soft or null"})
+                    self.send_json(400, {"error": "kind must be soft, hard, emergency or null"})
                     return
                 rid = str(body.get("id", ""))
                 targets = ([r for r in list(self.registry.repos.values()) if is_harness_repo(r.root)]

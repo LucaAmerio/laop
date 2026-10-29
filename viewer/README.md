@@ -7,9 +7,11 @@ tasks and why, questions to decide, provisional decisions, events, log, commits)
 
 Separate from laop: nothing is installed in the repositories. It reads their `harness/` files
 (state, tasks, log) and never writes them on its own. It changes a repository only when you ask:
-a decision you apply from a discussion with Claude (below), and the stop files: the "Soft stop",
-"Stop now" and "Clear stops" buttons create `AGENT_SOFT_STOP` or `AGENT_STOP` at the root of a
-repository, or remove both; the Overview has the same buttons for every watched repository at once.
+a decision you apply from a discussion with Claude (below), and the stop files: the "Soft stop", "Stop" and "Emergency stop" buttons create `AGENT_SOFT_STOP`
+(the agent at work finishes), `AGENT_STOP` (the task agent commits and hands off) or
+`AGENT_EMERGENCY_STOP` (every tool call blocked at once, work in progress lost) at the root of a
+repository, and "Clear stops" removes them; "Stop" and "Emergency stop" ask for confirmation first.
+The Overview has the same buttons for every watched repository at once.
 
 ## Use
 

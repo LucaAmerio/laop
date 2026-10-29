@@ -91,6 +91,14 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     valid = isinstance(claim, dict) and claim.get("task_id") == task["id"] \
         and claim.get("status") in ("review", "blocked")
 
+    # AGENT_STOP: the guard told the agent to commit and write a 'paused' claim. Not an attempt,
+    # with or without the claim; a 'paused' claim the owner did not ask for is an invalid claim.
+    if (not valid and not current.get("reverify")
+            and L.stop_requested_since(current.get("dispatch_time", 0))):
+        paused = claim if isinstance(claim, dict) and claim.get("task_id") == task["id"] \
+            and claim.get("status") == "paused" else {}
+        return record_pause(doc, state, task, paused, base, excluded, task_dirty())
+
     # An empty run: nothing committed by this dispatch (counted from dispatch_sha, not base_sha,
     # which also holds the commits of earlier attempts) and nothing left uncommitted. A run cut
     # short by an API error (a StopFailure recorded after the dispatch) is not an attempt either,
@@ -146,6 +154,32 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     return f"RECORDED: {task['id']} is now '{outcome}'.\n{NEXT}"
 
 
+def record_pause(doc: dict, state: dict, task: dict, claim: dict, base: str, excluded: list[str],
+                 dirty: list[str]) -> str:
+    """The owner stopped the task agent (AGENT_STOP): keep its handoff note for the next dispatch
+    and stop the loop. The task goes back to 'todo' with its attempts unchanged."""
+    current = state["current"]
+    st = state["tasks"][task["id"]]
+    handoff = {k: str(claim.get(k) or "").strip() for k in ("done", "todo")}
+    handoff = {k: v for k, v in handoff.items() if v}
+    if dirty:
+        handoff["uncommitted"] = dirty[:20]
+    if L.commits_since(base, excluded) == 0 and not dirty:
+        st.pop("base_sha", None)  # nothing to continue from: a fresh base at the next dispatch
+    st["handoff"] = {**handoff, "attempt": current["attempt"], "time": L.now()}
+    st["status"] = "todo"
+    state["current"] = None
+    state["loop_active"] = False
+    how = "with a handoff note" if claim else "without a handoff note"
+    L.event(state, f"{task['id']}: paused by AGENT_STOP {how}; not counted as an attempt")
+    L.notify("loop stopped", f"{task['id']} paused {how}.\n{L.progress(state)}")
+    L.save_state(doc, state)
+    return L.terminal(f"STOPPED: AGENT_STOP: {task['id']} was paused {how} (not counted as an "
+                      "attempt); the next dispatch starts from its commits and the note. Delete "
+                      f"AGENT_STOP and start the loop again (/{C.LOOP_COMMAND}) to resume.\n"
+                      "NEXT ACTION: tell the owner and end your turn.", doc, state)
+
+
 def request_review(doc: dict, state: dict, task: dict, base: str, excluded: list[str],
                    owner_files: list[str] | None = None) -> str:
     current = state["current"]
@@ -162,7 +196,7 @@ def request_review(doc: dict, state: dict, task: dict, base: str, excluded: list
                                     encoding="utf-8")
     L.event(state, f"{task['id']} checks passed, review requested")
     L.save_state(doc, state)
-    return (f"REVIEW: checks passed for {task['id']}.\n" + L.spawn_instruction(state, "step_record"))
+    return L.spawn_or_stop(doc, state, f"REVIEW: checks passed for {task['id']}.\n", "step_record")
 
 
 def request_resolution(doc: dict, state: dict, task: dict, claim: dict) -> str:
@@ -180,8 +214,8 @@ def request_resolution(doc: dict, state: dict, task: dict, claim: dict) -> str:
     L.RESOLVE_PROMPT_FILE.write_text(L.build_resolve_prompt(task, claim, token_line, out_rel), encoding="utf-8")
     L.event(state, f"{task['id']} asked {qid}; resolution requested")
     L.save_state(doc, state)
-    return (f"RESOLVE: {task['id']} stopped on question {qid}; the resolver decides whether it needs the "
-            "owner.\n" + L.spawn_instruction(state, "step_resolve"))
+    return L.spawn_or_stop(doc, state, f"RESOLVE: {task['id']} stopped on question {qid}; the resolver "
+                           "decides whether it needs the owner.\n", "step_resolve")
 
 
 def step() -> str:

@@ -1,5 +1,38 @@
 # laop changelog
 
+## 0.5.0 (2026-10-29)
+
+Three stops instead of two. **`AGENT_STOP` changes meaning**: it no longer blocks every tool call;
+the old behaviour is now `AGENT_EMERGENCY_STOP`.
+
+- `AGENT_SOFT_STOP` is checked after every agent, not only between tasks: after the task agent
+  (once `step_verify` and its checks ran), the reviewer, the resolver and the challenger, the loop
+  stops before spawning the next subagent of the task (`loop_core.spawn_or_stop`). The pending spawn
+  stays in the state: on restart `step_next` spawns that subagent first.
+- `AGENT_STOP`: a stop that does not wait for the task and loses no work. The guard refuses every
+  call of the task agent except `git add/commit/status/diff/log/show` and the write of
+  `harness/claim.json`, with the instruction to commit the work in progress (`<task id>: WIP ...`),
+  write a claim `{"status": "paused", "done": ..., "todo": ...}` and end. A reviewer, resolver or
+  challenger is told to end without writing; its missing output is not a failed try and it is
+  spawned again on restart. The orchestrator may run the step scripts but spawn nothing; the stop
+  hook keeps it going until the pause is recorded.
+  - `step_verify` records the pause: the task goes back to `todo`, no attempt counted, no checks,
+    no review; the handoff note is kept in state.json (`handoff`). It is a pause only when the owner
+    asked for it: AGENT_STOP present, or a guard refusal it caused since the dispatch (the owner may
+    delete the file before `step_verify` runs). A session stopped without a claim is a pause without
+    a note; a `paused` claim nobody asked for is an invalid claim.
+  - The next dispatch is a fresh prompt plus the handoff note, the files left uncommitted, if any,
+    and `git log --oneline` of the task's commits.
+  - Commit rather than stash: the commits show in the `git log` the next session reads, `git stash`
+    stays forbidden to the agents, and `step_verify` already treats uncommitted work as an error.
+- `AGENT_EMERGENCY_STOP`: every tool call of every session blocked at once (the former `AGENT_STOP`).
+  Added to the runtime block of `.gitignore` on upgrade.
+- A loop restarted with a task in flight is active again at once (`loop_active`), so the stop hook
+  keeps the orchestrator going until the task ends.
+- Viewer: buttons "Soft stop", "Stop", "Emergency stop" and "Clear stops"; "Stop" and "Emergency
+  stop" ask for confirmation in a dialog, the emergency one in alarm red, stating that it is a force
+  kill and that work in progress is lost.
+
 ## 0.4.3 (2026-10-18)
 
 - New owner action `reverify task=<id>`: a task whose work is already committed goes straight to the

@@ -7,8 +7,12 @@ it and the stderr text is shown to the agent.
 
 What it enforces
 ----------------
-- Kill switch: while a file named AGENT_STOP exists at the repository root, every tool call is
-  blocked.
+- Emergency stop: while a file named AGENT_EMERGENCY_STOP exists at the repository root, every
+  tool call is blocked.
+- Stop: while a file named AGENT_STOP exists, the loop winds down. A task agent may only commit
+  its work in progress and write a ``paused`` claim with a handoff note; every other call it makes
+  is refused with that instruction. The reviewer, resolver and challenger are told to end without
+  writing; the orchestrator may run the step scripts but spawn nothing. Owner sessions go on.
 - Write permissions per role (Write, Edit, MultiEdit, NotebookEdit, and a best-effort analysis of
   shell commands), lock markers of lockable directories, and the protected paths outside the
   repository (read-only for every role, the owner included).
@@ -113,6 +117,22 @@ DOTNET_FILE_API = re.compile(
 )
 NULL_DEVICES = {"/dev/null", "$null", "nul"}  # compared case-insensitively
 ENV_REF = re.compile(r"\$env:(\w+)|\$\{(\w+)\}|\$(\w+)|%(\w+)%", re.IGNORECASE)
+
+READ_TOOLS = {"Read", "Grep", "Glob"}
+# AGENT_STOP: the start of every denial (step_verify looks for it) and what a task agent may still run.
+STOP_PREFIX = "AGENT_STOP is present"
+STOP_GIT = {"add", "commit", "status", "diff", "log", "show", "rev-parse"}
+STOP_MESSAGE_COMMANDS = {"cat", "echo", "printf"}  # inside a $(...) commit message only
+STOP_TASK_MESSAGE = (
+    f"{STOP_PREFIX}: the owner is stopping the loop and cannot wait for this task to finish. Wind "
+    "down now, in this order, with no other tool call (any other call is refused): 1. commit your "
+    "work in progress as it is, even if incomplete or failing (git add the files of the task, then "
+    "git commit -m \"<task id>: WIP <what it contains>\"); 2. write harness/claim.json with "
+    '{"task_id": "<task id>", "status": "paused", "done": "what is done and committed", '
+    '"todo": "what is left, the next step first, and anything the next session must know"}; '
+    "3. end your turn. The task is not counted as an attempt: the next session starts from your "
+    "commits and this note."
+)
 
 FIX_HINT = (
     " Do not work around this guard (no redirection, no scripts writing the file, "
@@ -808,6 +828,63 @@ def check_dispatch(tool_input: dict) -> None:
         deny(f"The prompt must be the full content of {prompt_file}: read it and pass it verbatim.")
 
 
+def check_stop(role: str, tool: str, tool_input: dict, cwd: str | None) -> None:
+    """AGENT_STOP is present: let a loop role do only what winds it down (see the module doc).
+
+    The step scripts read the denials in harness/logs/guard_blocks.jsonl (messages starting with
+    STOP_PREFIX) to tell a session the owner stopped from one that failed."""
+    if role == pathrules.ORCHESTRATOR_ROLE:
+        if tool in AGENT_TOOLS:
+            deny(f"{STOP_PREFIX}: the owner is stopping the loop. Spawn no subagent: run python "
+                 "harness/step_next.py and end your turn when it prints STOPPED.")
+        return
+    if role not in pathrules.dispatch_roles(PROJECT_DIR):
+        deny(f"{STOP_PREFIX}: the owner is stopping the loop. End your turn now, without writing "
+             "your output file: the harness spawns you again when the loop restarts.")
+    if tool in READ_TOOLS:
+        return
+    if tool in WRITE_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        if pathrules.to_repo_relative(path, PROJECT_DIR, cwd) == "harness/claim.json":
+            return
+    elif tool in SHELL_TOOLS and stop_shell_allowed(tool_input.get("command") or "",
+                                                    tool == "PowerShell"):
+        return
+    deny(STOP_TASK_MESSAGE)
+
+
+def stop_shell_allowed(command: str, windows_syntax: bool, depth: int = 0) -> bool:
+    """Only git commands that commit or inspect, with a commit message from a substitution
+    (``git commit -m "$(cat <<'EOF' ...)"``) allowed; the usual checks still follow."""
+    try:
+        text, nested = strip_heredocs(command, windows_syntax)
+        segments = split_segments(tokenize(text, windows_syntax))
+    except ValueError:
+        return False
+    for seg in segments:
+        if any(tok in REDIRECTS_OUT for tok in seg):
+            return False
+        if git_subcommand(seg) in STOP_GIT:
+            continue
+        if not (depth and os.path.basename(seg[0]).lower() in STOP_MESSAGE_COMMANDS):
+            return False
+    return bool(segments) and depth < 3 and all(
+        stop_shell_allowed(inner, windows_syntax, depth + 1) for inner in nested)
+
+
+def git_subcommand(seg: list[str]) -> str | None:
+    """The subcommand of a git command segment (``git -C x commit`` -> commit), else None."""
+    if not seg or os.path.basename(seg[0]).lower() not in ("git", "git.exe"):
+        return None
+    args = iter(seg[1:])
+    for arg in args:
+        if arg in GIT_OPTS_WITH_VALUE:
+            next(args, None)
+        elif not arg.startswith("-"):
+            return arg
+    return None
+
+
 def record_owner_writes(paths: list[str], cwd: str | None) -> None:
     """Record the repository files the owner writes while the loop is active (harness/
     owner_writes.json): the owner may work in a second session on the same working tree, and the
@@ -847,8 +924,8 @@ def run() -> None:
 
     write_heartbeat(event)
 
-    if (PROJECT_DIR / "AGENT_STOP").exists():
-        deny("AGENT_STOP is present: the owner has halted all agent activity. "
+    if (PROJECT_DIR / "AGENT_EMERGENCY_STOP").exists():
+        deny("AGENT_EMERGENCY_STOP is present: the owner has halted all agent activity. "
              "Stop working now and end your turn without further tool calls.")
 
     tool = event.get("tool_name", "")
@@ -866,6 +943,8 @@ def run() -> None:
     CALL.update(role=role, agent_type=event.get("agent_type"), tool=tool,
                 target=(tool_input.get("file_path") or tool_input.get("notebook_path")
                         or tool_input.get("command") or "")[:300])
+    if (PROJECT_DIR / "AGENT_STOP").exists() and role != pathrules.OWNER_ROLE:
+        check_stop(role, tool, tool_input, cwd)
 
     if tool in WRITE_TOOLS:
         path = tool_input.get("file_path") or tool_input.get("notebook_path")

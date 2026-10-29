@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +36,13 @@ def run(doc: dict, state: dict) -> str:
     first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     match = re.fullmatch(r"VERDICT:\s*(PASS|NEEDS_WORK)", first)
 
+    if not match and L.stop_requested_since(current["verify_time"]):
+        # the guard told the reviewer to end without a verdict: not a failed try, reviewed again
+        L.event(state, f"{task['id']}: review cut short by AGENT_STOP")
+        current["verify_time"] = time.time()  # the next reviewer's window
+        L.save_state(doc, state)
+        return L.spawn_or_stop(doc, state, f"NO VERDICT: AGENT_STOP cut the review of {task['id']} "
+                               "short.\n", "step_record")
     if not match:
         current["review_tries"] = current.get("review_tries", 0) + 1
         # a verdict the reviewer tried to write and the guard refused is not a missing verdict
@@ -44,8 +52,9 @@ def run(doc: dict, state: dict) -> str:
                                       f"twice; the work is committed, restart /{C.LOOP_COMMAND} to re-review."
                                       + blocked)
         L.save_state(doc, state)
-        return (f"NO VALID VERDICT in {current['verdict']} (the first line must be 'VERDICT: PASS' or "
-                f"'VERDICT: NEEDS_WORK').{blocked}\n" + L.spawn_instruction(state, "step_record"))
+        return L.spawn_or_stop(doc, state, f"NO VALID VERDICT in {current['verdict']} (the first line "
+                               f"must be 'VERDICT: PASS' or 'VERDICT: NEEDS_WORK').{blocked}\n",
+                               "step_record")
 
     if match.group(1) == "PASS":
         L.mark_done(state, task, f"{current.get('reviewer', 'evaluator')} PASS", notes=text)

@@ -122,6 +122,21 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 .stops button.hard { color: var(--bad); }
 .stops button.soft.on { background: var(--q-bg); border-color: var(--q); }
 .stops button.hard.on { background: var(--bad-bg); border-color: var(--bad); }
+/* --alarm: a filled red that keeps white text readable in both themes (--bad is light in dark mode) */
+:root { --alarm: #b71c1c; }
+.stops button.emergency { color: #fff; background: var(--alarm); border-color: var(--alarm); font-weight: 600; }
+.stops button.emergency.on { box-shadow: 0 0 0 2px var(--bad-bg); }
+/* confirmation of a stop: hand-off stop in the panel colours, emergency stop in alarm red */
+.modal .inner.confirm { width: min(560px, 100%); }
+.confirm .cb { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; }
+.confirm .cb ul { margin: 0; padding-left: 20px; }
+.confirm .cf { padding: 12px 18px 16px; display: flex; justify-content: flex-end; gap: 8px; }
+.confirm .cf .go { color: var(--bad); background: var(--bad-bg); border-color: var(--bad); font-weight: 600; }
+.inner.confirm.emergency .cf .go { color: #fff; background: var(--alarm); border-color: var(--alarm); }
+.inner.confirm.emergency { border: 3px solid var(--alarm); }
+.inner.confirm.emergency .mh { background: var(--alarm); color: #fff; border-bottom-color: var(--alarm); }
+.inner.confirm.emergency .mh b { font-size: 16px; letter-spacing: .04em; text-transform: uppercase; }
+.inner.confirm.emergency .warn { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); border-radius: 8px; padding: 10px 12px; font-weight: 600; }
 .stops button:disabled { opacity: .55; cursor: default; transform: none; }
 #banner { display: none; margin: 10px 0 0; padding: 0 16px; }
 #banner div { padding: 8px 12px; border-radius: 8px; background: var(--q-bg); color: var(--q); font-weight: 600; }
@@ -534,8 +549,9 @@ function kindOf(t, d = data) {
 }
 function loopStatus(d = data) {
   const st = d.state, all = d.tasks.length && d.tasks.every((t) => t.st.status === "done");
-  if (d.stops.hard) return ["kill", "AGENT_STOP"];
+  if (d.stops.emergency) return ["kill", "EMERGENCY STOP"];
   if (st.halted) return ["halted", "HALTED"];
+  if (st.loop_active && d.stops.hard) return ["soft", "STOPPING (handoff)"];
   if (st.loop_active) return d.stops.soft ? ["soft", "FINISHING (soft stop)"] : ["running", "RUNNING"];
   if (all) return ["complete", "MILESTONE COMPLETE"];
   if (st.current) return ["paused", "STOPPED MID-TASK"];
@@ -575,7 +591,7 @@ function renderHeader() {
   $("#pname").textContent = p.name || "Loop";
   $("#meta").textContent = [d.milestone && "milestone " + d.milestone, d.branch && "branch " + d.branch, d.head, p.version && "laop " + p.version].filter(Boolean).join(" · ");
   const pill = $("#pill"); pill.className = "pill " + cls; pill.textContent = word;
-  setHTML($("#stops"), SNAP ? "" : stopButtons(active, d.stops.soft, d.stops.hard, ""));
+  setHTML($("#stops"), SNAP ? "" : stopButtons(active, d.stops, ""));
   const n = needsOf(d).n;
   setHTML($("#ptabs"), `<button data-pview="status" class="${pview !== "work" ? "on" : ""}">Status${n ? ` <span class="cnt" title="needs you">${n}</span>` : ""}</button>
     <button data-pview="work" class="${pview === "work" ? "on" : ""}">Work</button>`);
@@ -614,7 +630,7 @@ function renderNow() {
   const cur = data.state.current, el = $("#now"), [cls, word] = loopStatus();
   if (!cur) {
     let msg = { running: "Between steps: the orchestrator is choosing the next task.", complete: "Every task is done.",
-      halted: "The loop is halted: see Needs you.", kill: "AGENT_STOP is present: every tool call is blocked.",
+      halted: "The loop is halted: see Needs you.", kill: "AGENT_EMERGENCY_STOP is present: every tool call is blocked.",
       idle: "No task in flight. The loop is not running." }[cls] || "";
     const ready = data.tasks.filter((t) => kindOf(t) === "ready");
     if (cls === "idle" && ready.length) msg += ` ${ready.length} task(s) ready: type /${esc(data.project.loop_command || "loop")} in the loop session to continue.`;
@@ -653,9 +669,10 @@ function attentionItems() {
   const d = data, st = d.state, out = [];
   const box = (k, title, body, cmds = [], clamp = false) =>
     out.push(`<div class="att k-${k}"><div class="t">${title}</div>${body ? `<div class="b ${clamp ? "clamp" : ""}">${body}</div>` : ""}${cmds.map(cmd).join("")}</div>`);
-  if (d.stops.hard) box("blocked-harness", "AGENT_STOP present", "Every tool call of every session is blocked until you delete the file AGENT_STOP at the repository root.");
+  if (d.stops.emergency) box("blocked-harness", "Emergency stop", "AGENT_EMERGENCY_STOP is present: every tool call of every session is blocked until you delete the file at the repository root.");
+  if (d.stops.hard) box("blocked-question", "Stop requested", "AGENT_STOP is present: the task agent commits its work in progress, writes a handoff note and ends (not counted as an attempt); a reviewer or resolver ends without writing; then the loop stops. Delete the file to let the loop go on: the task resumes from the handoff.");
   if (st.halted) box("blocked-harness", "Loop halted", esc(st.halted), [OT + " clear_halt"]);
-  if (d.stops.soft) box("blocked-question", "Soft stop requested", "AGENT_SOFT_STOP is present: the task in flight finishes, no new one starts. Delete the file to let the loop go on.");
+  if (d.stops.soft) box("blocked-question", "Soft stop requested", "AGENT_SOFT_STOP is present: the loop stops when the agent at work ends (task agent, reviewer, resolver or challenger), and resumes from there. Delete the file to let the loop go on.");
   const hb = d.heartbeat;
   if (st.loop_active && hb && nowS() - hb.time > STALL_MIN * 60)
     box("blocked-question", "No activity", `No tool call for <b data-ago="${hb.time}">${ago(hb.time)}</b> while the loop is active: the session may be stuck, waiting for you, or closed.`);
@@ -1233,7 +1250,7 @@ function needsOf(d) {
   const prov = Object.values(d.state.provisional || {}).filter((p) => p.status === "open").length;
   const gates = d.tasks.filter((t) => kindOf(t, d) === "gate-open").length;
   const blocked = d.tasks.filter((t) => t.st.status === "blocked").length;
-  const bad = !!(d.state.halted || d.stops.hard);
+  const bad = !!(d.state.halted || d.stops.emergency);
   return { n: gates + blocked + prov + (bad ? 1 : 0), bad, gates, blocked, prov };
 }
 function renderTabs() {
@@ -1268,7 +1285,7 @@ function nowText(r, cls) {
     const phase = { dispatched: "agent", awaiting_review: "review", resolving: "resolver", challenging: "challenger" }[cur.phase] || cur.phase;
     return `<b>${esc(t.id)}</b> ${esc(clip(t.title, 70))} · ${esc(phase)}: <b>${esc(info.who)}</b>${info.start ? ` for <b data-since="${info.start}">${dur(nowS() - info.start)}</b>` : ""} · attempt ${cur.attempt ?? "?"}`;
   }
-  let now = { running: "Between steps.", complete: "Every task is done.", halted: "Halted.", kill: "AGENT_STOP present.", idle: "Not running." }[cls] || "";
+  let now = { running: "Between steps.", complete: "Every task is done.", halted: "Halted.", kill: "Emergency stop.", idle: "Not running." }[cls] || "";
   const ready = r.tasks.filter((t) => kindOf(t, r) === "ready").length;
   if (cls === "idle" && ready) now += ` ${ready} task(s) ready.`;
   return now;
@@ -1278,7 +1295,8 @@ function overviewCard(r) {
     <div class="ov-foot">${esc(r.path)}</div><div class="ov-items"><div class="ov-item k-blocked-harness">${esc(r.problems[0])} Remove the tab with ×, or restore the folder.</div></div></section>`;
   const [cls, word] = loopStatus(r), b = barHTML(r), nd = needsOf(r), now = nowText(r, cls);
   const items = [];
-  if (r.stops.hard) items.push(["blocked-harness", "<b>AGENT_STOP</b> present: every tool call is blocked."]);
+  if (r.stops.emergency) items.push(["blocked-harness", "<b>Emergency stop</b>: every tool call is blocked."]);
+  else if (r.stops.hard) items.push(["blocked-question", "<b>Stop requested</b>: the task in flight hands off, then the loop stops."]);
   if (r.state.halted) items.push(["blocked-harness", `<b>Halted:</b> ${esc(clip(r.state.halted, 220))}`]);
   r.tasks.filter((t) => kindOf(t, r) === "gate-open").forEach((t) => items.push(["gate-open", `<b>◆ ${esc(t.id)} awaits you</b> · ${esc(clip(t.title, 90))}${t.holds_up.length ? ` · holds ${t.holds_up.length}` : ""}`]));
   if (nd.prov) items.push(["blocked-owner_action", `<b>${nd.prov} provisional decision(s)</b> to ratify or override`]);
@@ -1307,7 +1325,7 @@ function renderOverview() {
   const live = repos.filter((r) => !r.missing);
   const stale = repos.length && !repos.every((r) => r.missing || (r.tasks.length === 0 || "time" in r.tasks[0]));
   setHTML($("#overview"), `<div class="ov-top"><h1>Overview</h1><span class="muted">${repos.length} repositories · ${running} running · ${needing} need you</span>
-      ${live.length ? `<span class="stops">${stopButtons("all", live.every((r) => r.stops.soft), live.every((r) => r.stops.hard), " all", live.some((r) => r.stops.soft || r.stops.hard))}</span>` : ""}</div>
+      ${live.length ? `<span class="stops">${stopButtons("all", Object.fromEntries(STOP_KINDS.map((k) => [k, live.every((r) => r.stops[k])])), " all", live.some((r) => STOP_KINDS.some((k) => r.stops[k])))}</span>` : ""}</div>
     ${stale ? `<div class="att k-blocked-question" style="margin-top:12px"><div class="t">Viewer server out of date</div><div class="b">Restart <code>python viewer.py</code> (laop_view).</div></div>` : ""}
     ${repos.length ? `<div class="ov-grid">${repos.map(overviewCard).join("")}</div>`
       : `<div class="card" style="margin-top:14px">No repository yet. <a data-add>Add one</a>: the path of a repository with a task loop.</div>`}`);
@@ -1436,21 +1454,57 @@ function openAdd() {
     $("#cands").innerHTML = c.length ? `<div class="small muted">Found nearby:</div>${c.map((p) => `<button type="button" data-addpath="${esc(p)}">${esc(p)}</button>`).join("")}` : "";
   }).catch(() => { $("#cands").innerHTML = ""; });
 }
-/** Soft stop / Stop now / Clear stops for one repository (id) or every one ("all"). */
-function stopButtons(id, soft, hard, suffix, any = soft || hard) {
-  return `<button class="soft ${soft ? "on" : ""}" data-stop="soft" data-stopid="${esc(id)}" ${soft ? "disabled" : ""}
-      title="Create AGENT_SOFT_STOP: the task in flight finishes, no new one starts">Soft stop${suffix}</button>
-    <button class="hard ${hard ? "on" : ""}" data-stop="hard" data-stopid="${esc(id)}" ${hard ? "disabled" : ""}
-      title="Create AGENT_STOP: every tool call of every session is blocked at once">Stop now${suffix}</button>
-    <button data-stop="clear" data-stopid="${esc(id)}" ${any ? "" : "disabled"}
-      title="Remove AGENT_STOP and AGENT_SOFT_STOP">Clear stops${suffix}</button>`;
+/** Soft stop / Stop / Emergency stop / Clear stops for one repository (id) or every one ("all"). */
+const STOP_KINDS = ["soft", "hard", "emergency"];
+function stopButtons(id, on, suffix, any = STOP_KINDS.some((k) => on[k])) {
+  const b = (kind, label, title) => `<button class="${kind} ${on[kind] ? "on" : ""}" data-stop="${kind}" data-stopid="${esc(id)}" ${on[kind] ? "disabled" : ""}
+      title="${title}">${label}${suffix}</button>`;
+  return b("soft", "Soft stop", "Create AGENT_SOFT_STOP: the agent at work finishes, then the loop stops and later resumes from there")
+    + b("hard", "Stop", "Create AGENT_STOP: the task agent commits its work and writes a handoff note, then the loop stops")
+    + b("emergency", "Emergency stop", "Create AGENT_EMERGENCY_STOP: every tool call is blocked at once (force kill)")
+    + `<button data-stop="clear" data-stopid="${esc(id)}" ${any ? "" : "disabled"}
+      title="Remove AGENT_SOFT_STOP, AGENT_STOP and AGENT_EMERGENCY_STOP">Clear stops${suffix}</button>`;
+}
+/** The confirmation of a stop in the modal: resolves true on the confirm button only. */
+function confirmStop(what, who) {
+  const emergency = what === "emergency";
+  const body = emergency
+    ? `<div class="warn">This is a force kill. Work in progress is lost.</div>
+       <div>AGENT_EMERGENCY_STOP is created in <b>${esc(who)}</b>. From the next tool call, every call of every session there is blocked, yours included:</div>
+       <ul><li>the agent at work stops mid-step: nothing is committed, no handoff note is written;</li>
+       <li>its uncommitted changes stay in the working tree as they are, possibly half-written;</li>
+       <li>the loop resumes only after you delete the file and check the repository.</li></ul>
+       <div>Use it when something is doing damage. To stop quickly without losing work, use <b>Stop</b>.</div>`
+    : `<div>AGENT_STOP is created in <b>${esc(who)}</b>. The loop does not wait for the task to finish:</div>
+       <ul><li>at its next tool call the task agent is told to commit its work in progress, write a handoff note (done, to do) and end; every other call is refused;</li>
+       <li>a reviewer, resolver or challenger ends without writing and is spawned again on restart;</li>
+       <li>the paused task is not counted as an attempt; the next dispatch starts from its commits and its note.</li></ul>
+       <div>The agent's context is lost. To let it finish, use <b>Soft stop</b>.</div>`;
+  const m = $("#modal");
+  m.hidden = false;
+  m.innerHTML = `<div class="inner confirm ${emergency ? "emergency" : ""}" role="alertdialog" aria-modal="true">
+    <div class="mh"><b>${emergency ? "⚠ Emergency stop" : "Stop the loop"}</b></div>
+    <div class="cb">${body}</div>
+    <div class="cf"><button type="button" data-ans="no">Cancel</button>
+      <button type="button" class="go" data-ans="yes">${emergency ? "Force kill now" : "Stop with handoff"}</button></div></div>`;
+  return new Promise((resolve) => {
+    m.querySelectorAll("[data-ans]").forEach((btn) => btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      m.hidden = true;
+      resolve(btn.dataset.ans === "yes");
+    }));
+    m.querySelector('[data-ans="no"]').focus();
+  });
 }
 async function setStop(id, what) {
   const r = repos.find((x) => x.id === id), who = id === "all" ? "every watched repository" : (r ? r.name : "this repository");
-  const ask = { hard: `Create AGENT_STOP in ${who}? Every tool call of every session there is blocked at once, the task in flight included.`,
-    soft: id === "all" ? `Create AGENT_SOFT_STOP in ${who}? Each task in flight finishes, no new one starts.` : null,
-    clear: id === "all" ? `Remove AGENT_STOP and AGENT_SOFT_STOP from ${who}?` : null }[what];
-  if (ask && !confirm(ask)) return;
+  if (what === "hard" || what === "emergency") {
+    if (!(await confirmStop(what, who))) return;
+  } else {
+    const ask = id === "all" ? { soft: `Create AGENT_SOFT_STOP in ${who}? The loop stops when the agent at work ends.`,
+      clear: `Remove the stop files from ${who}?` }[what] : null;
+    if (ask && !confirm(ask)) return;
+  }
   const res = await postJSON("/api/stop", { id, kind: what === "clear" ? null : what });
   if (!res.ok) alert("Not done: " + ((res.body.failed || []).join("\n") || res.body.error || "server error"));
   ovEtag = null; etag = null;

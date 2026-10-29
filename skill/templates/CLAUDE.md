@@ -57,4 +57,6 @@ End:
 
 `review` means you believe the task is complete. The harness verifies it independently; you never mark a task done. `block_type`: `question` for an open question (it may be answered on the owner's behalf by the resolver, provisionally), `owner_action` for something only the owner can do (pass a gate, provide a licence or a data file), `harness` when the harness itself prevents the work.
 
+If the guard tells you that AGENT_STOP is present, the owner is stopping the loop: commit your work in progress as it is, write a claim with `"status": "paused"`, `done` (what is done and committed) and `todo` (what is left, the next step first), and end. It is not counted as an attempt.
+
 5. Your final reply is at most 5 lines: task id, claim status, one-line summary.

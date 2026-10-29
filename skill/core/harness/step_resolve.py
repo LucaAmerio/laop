@@ -42,14 +42,22 @@ def _first_line(text: str, pattern: str) -> str | None:
 
 def _retry_or_block(doc: dict, state: dict, task: dict, who: str, expected: str) -> str:
     current = state["current"]
+    window = "challenge_time" if current["phase"] == "challenging" else "resolve_time"
+    if L.stop_requested_since(current[window]):
+        # the guard told the role to end without writing: not a failed try, spawned again
+        L.event(state, f"{task['id']}: {who} cut short by AGENT_STOP")
+        current[window] = time.time()  # the next session's window
+        L.save_state(doc, state)
+        return L.spawn_or_stop(doc, state, f"NO {who.upper()} OUTPUT: AGENT_STOP cut it short.\n",
+                               "step_resolve")
     current["resolve_tries"] = current.get("resolve_tries", 0) + 1
     blocked = L.guard_blocks_note(who, current["resolve_time"])
     if current["resolve_tries"] >= 2:
         return _for_owner(doc, state, task, f"the {who} did not write a valid '{expected}' line "
                           f"twice.{blocked}", with_recommendation=False)
     L.save_state(doc, state)
-    return (f"NO VALID {who.upper()} OUTPUT in {current['resolution']} (expected a line '{expected}')."
-            f"{blocked}\n" + L.spawn_instruction(state, "step_resolve"))
+    return L.spawn_or_stop(doc, state, f"NO VALID {who.upper()} OUTPUT in {current['resolution']} "
+                           f"(expected a line '{expected}').{blocked}\n", "step_resolve")
 
 
 def _for_owner(doc: dict, state: dict, task: dict, why: str, with_recommendation: bool = True) -> str:
@@ -109,8 +117,8 @@ def run(doc: dict, state: dict) -> str:
         L.event(state, f"{task['id']}: resolver {verdict.lower()} on {current['question_id']} "
                        f"(category {category or 'unknown'}); challenge requested")
         L.save_state(doc, state)
-        return (f"CHALLENGE: the resolver wrote its {verdict.lower()} on {current['question_id']}; the "
-                "challenger checks it.\n" + L.spawn_instruction(state, "step_resolve"))
+        return L.spawn_or_stop(doc, state, f"CHALLENGE: the resolver wrote its {verdict.lower()} on "
+                               f"{current['question_id']}; the challenger checks it.\n", "step_resolve")
 
     # challenging: the last CHALLENGE line the challenger appended
     fresh = path.exists() and path.stat().st_mtime >= current["challenge_time"]

@@ -2,7 +2,7 @@
 
 Registered on the Stop event. When the main conversation is the orchestrator and the loop is
 active, ending the turn is blocked (exit code 2) and Claude is told how to continue. The stop is
-allowed when the loop is not active, when AGENT_STOP exists, or after
+allowed when the loop is not active, when AGENT_EMERGENCY_STOP exists, or after
 ``max_stops_without_progress`` consecutive stops with no change in the loop state (so a stuck
 orchestrator cannot loop forever).
 """
@@ -33,7 +33,9 @@ def main() -> int:
         main_role = pathrules.main_role(L.REPO, event.get("session_id"))
     except ValueError:  # bad input or unreadable state.json: do not keep the session going
         return 0
-    if event.get("agent_id") or main_role != L.ORCHESTRATOR or L.STOP_FILE.exists():
+    # AGENT_STOP and AGENT_SOFT_STOP: the step scripts end the loop (loop_active false) once the
+    # paused task is recorded; until then the orchestrator must go on.
+    if event.get("agent_id") or main_role != L.ORCHESTRATOR or L.EMERGENCY_STOP_FILE.exists():
         return 0
     outcome = {"kind": "inactive"}
 

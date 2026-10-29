@@ -24,10 +24,17 @@ def run(doc: dict, state: dict) -> str:
     if refused:
         return refused
 
-    if L.STOP_FILE.exists():
-        state["loop_active"] = False
-        L.save_state(doc, state)
-        return "STOPPED: AGENT_STOP is present at the repository root.\n" + END
+    current = state["current"]
+    if (L.STOP_FILE.exists() and not L.EMERGENCY_STOP_FILE.exists() and current
+            and current["phase"] == "dispatched"):
+        # the task agent was told to commit and hand off: record its pause before stopping
+        return ("STOPPING: AGENT_STOP is present; the task agent's handoff is recorded first.\n"
+                "NEXT ACTION: run python harness/step_verify.py")
+    for stop in (L.EMERGENCY_STOP_FILE, L.STOP_FILE):
+        if stop.exists():
+            state["loop_active"] = False
+            L.save_state(doc, state)
+            return f"STOPPED: {stop.name} is present at the repository root.\n" + END
 
     if not state.get("orchestrator_session"):
         return (f"REFUSED: no session is bound as orchestrator. Start the loop with /{C.LOOP_COMMAND} "
@@ -43,6 +50,10 @@ def run(doc: dict, state: dict) -> str:
 
     current = state["current"]
     if current:
+        # a loop stopped in the middle of a task resumes it: the loop is active again
+        if not state["loop_active"]:
+            state["loop_active"] = True
+            L.save_state(doc, state)
         phase = current["phase"]
         if phase == "dispatched" and current.get("reverify"):
             return (f"PENDING: the owner reverify of task {current['task_id']} is not verified yet.\n"
@@ -54,10 +65,11 @@ def run(doc: dict, state: dict) -> str:
                     "NEXT ACTION: run python harness/step_verify.py")
         then = {"awaiting_review": "step_record", "resolving": "step_resolve",
                 "challenging": "step_resolve"}[phase]
-        return (f"PENDING: task {current['task_id']} is waiting for its {phase.replace('_', ' ')}.\n"
-                + L.spawn_instruction(state, then))
+        return L.spawn_or_stop(doc, state, f"PENDING: task {current['task_id']} is waiting for its "
+                               f"{phase.replace('_', ' ')}.\n", then)
 
-    # Checked only here, with no task in progress: the soft stop never interrupts a task.
+    # The soft stop never interrupts an agent: it is checked here and before each spawn of a task
+    # in flight (loop_core.spawn_or_stop), so the loop stops after the agent that is working.
     if L.SOFT_STOP_FILE.exists():
         state["loop_active"] = False
         L.event(state, "soft stop: no new task dispatched")
@@ -168,8 +180,11 @@ def run(doc: dict, state: dict) -> str:
                 p.get("file") == rel and p.get("status") == "ratified" for p in state["provisional"].values()):
             resolution_by = "ratified"  # the owner ratified it before this dispatch
         resolution = L.resolution_text(L.REPO / rel)
+    handoff = st.pop("handoff", None)
+    if handoff:  # the owner stopped the previous session (AGENT_STOP): its note and its commits
+        handoff["log"] = L.git("log", "--oneline", f"{st['base_sha']}..HEAD")
     L.PROMPT_FILE.write_text(L.build_prompt(doc, task, token_line, steer, resolution, resolution_by,
-                                            interrupted=st.pop("interrupted", "")),
+                                            interrupted=st.pop("interrupted", ""), handoff=handoff),
                              encoding="utf-8")
     L.event(state, f"dispatch {task['id']} to {task['agent']} (attempt {st['attempts'] + 1})")
     # Last change before saving: the integrity snapshot of what the task must not touch (F4).

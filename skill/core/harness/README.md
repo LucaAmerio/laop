@@ -123,7 +123,7 @@ reserved to the owner: neither the resolver nor the challenger approves these do
 
 ## Claims
 
-The agent ends with `harness/claim.json`: `task_id`, `status` (`review` or `blocked`), `summary`, `notes_for_owner`; when blocked, `question`, `question_id` (the id of the entry in the open questions file) and `block_type`: `question` (an open question), `owner_action` (something only the owner can do: a gate step, a licence, a data file) or `harness` (the harness itself prevents the work).
+The agent ends with `harness/claim.json`: `task_id`, `status` (`review` or `blocked`), `summary`, `notes_for_owner`; when blocked, `question`, `question_id` (the id of the entry in the open questions file) and `block_type`: `question` (an open question), `owner_action` (something only the owner can do: a gate step, a licence, a data file) or `harness` (the harness itself prevents the work). Only under `AGENT_STOP`: `status` `paused` with `done` and `todo` (the handoff note).
 
 ## Resolver (project.json `resolver.mode`: off, advise, auto)
 
@@ -141,7 +141,10 @@ Trust ledger (in state.json, kept by `archive`): a delegated category (D) starts
 
 ## Owner controls
 
-- `AGENT_STOP` at the repository root: every tool call of every session is blocked until it is removed. `AGENT_SOFT_STOP`: the task in progress finishes, no new one starts.
+- Three stop files at the repository root, from the most patient; each stays until the owner deletes it, and the loop resumes where it stopped.
+  - `AGENT_SOFT_STOP`: the agent at work (task agent, reviewer, resolver or challenger) finishes; the loop stops before spawning the next one. On restart it spawns that one first.
+  - `AGENT_STOP`: the loop does not wait for the task. At its next tool call the task agent is told by the guard to commit its work in progress, write a `paused` claim with a handoff note and end; any other call is refused. A reviewer, resolver or challenger is told to end without writing. `step_verify` records the pause: not an attempt, no review; the next dispatch is a fresh prompt with the handoff note and the task's `git log`. A pause is recorded only when the owner asked for it (the file, or a guard refusal it caused); a `paused` claim otherwise is an invalid claim.
+  - `AGENT_EMERGENCY_STOP`: every tool call of every session is blocked at once (force kill: nothing is committed, no handoff). For an agent doing damage.
 - `harness/STEER.md`: a note added to the next dispatched prompt, then archived. `harness/STEER_<task id>.md`: injected into that task's next dispatch.
 - Live view: the laop viewer (a separate tool, `viewer/` in the laop repository), run once for all repositories: `python viewer.py`; it reads the harness files of each repository and never writes them.
 - `python harness/owner_tools.py` (no arguments for help): `status`, `pass_gate`, `unblock`, `resume`, `reverify`, `ratify`, `override`, `owner_commit`, `foreign_commit`, `allow_path`, `clear_halt`, `release`, `lint`, `archive`, `approve`, `approvals` (the last two act at once: they are not loop state). While a task is in flight, actions are queued and applied by the next step script.

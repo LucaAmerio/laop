@@ -747,6 +747,148 @@ class LoopTests(HarnessTest):
 FIXED = {"cmd": ["python", "-c", "import pathlib, sys; sys.exit(not pathlib.Path('data/fixed.txt').exists())"]}
 
 
+class StopTests(HarnessTest):
+    """The three stop files: soft (after the agent at work), stop (hand-off), emergency (kill)."""
+
+    def touch(self, name: str) -> None:
+        (self.r.root / name).write_text("x\n")
+
+    def to_review(self) -> None:
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: b")
+        r.claim("M1-001")
+        self.assertIn("REVIEW", r.step("step_verify"))
+
+    def test_emergency_stop_blocks_every_call(self):
+        r = self.r
+        self.touch("AGENT_EMERGENCY_STOP")
+        self.assertEqual(r.write("src/x.py", agent="builder")[0], 2)
+        code, err = r.write("CLAUDE.md")  # the owner too
+        self.assertEqual(code, 2)
+        self.assertIn("AGENT_EMERGENCY_STOP", err)
+
+    def test_stop_lets_the_task_agent_hand_off_only(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        self.touch("AGENT_STOP")
+        code, err = r.write("src/x.py", agent="builder")
+        self.assertEqual(code, 2)
+        self.assertIn("status\": \"paused", err)
+        self.assertEqual(r.shell("pytest -q", agent="builder")[0], 2)
+        self.assertEqual(r.shell("git stash", agent="builder")[0], 2)
+        self.assertEqual(r.shell("git add src/x.py && git commit -m 'M1-001: WIP x'", agent="builder")[0], 0)
+        self.assertEqual(r.shell("git commit -m \"$(cat <<'EOF'\nM1-001: WIP\nEOF\n)\"", agent="builder")[0], 0)
+        self.assertEqual(r.shell("cat src/a.py > src/c.py", agent="builder")[0], 2)
+        self.assertEqual(r.write("harness/claim.json", agent="builder")[0], 0)
+        self.assertEqual(r.tool("Read", {"file_path": "src/a.py"}, agent="builder")[0], 0)
+        code, err = r.tool("Read", {"file_path": "src/a.py"}, agent="evaluator")
+        self.assertEqual(code, 2)
+        self.assertIn("without writing", err)
+        self.assertEqual(r.tool("Agent", {"subagent_type": "builder", "prompt": "x"})[0], 2)
+        self.assertEqual(r.write("CLAUDE.md", session="B")[0], 0)  # owner sessions go on
+
+    def test_stop_records_a_pause_and_resumes_from_the_handoff(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        self.touch("AGENT_STOP")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: WIP half of b")
+        r.claim("M1-001", "paused", done="half of b", todo="the other half")
+        self.assertEqual(self.hook_stop(), 2)  # the orchestrator must record the pause first
+        self.assertIn("step_verify", r.step("step_next"))
+        out = r.step("step_verify")
+        self.assertIn("STOPPED", out)
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual((st["status"], st["attempts"]), ("todo", 0))
+        self.assertEqual(st["handoff"]["todo"], "the other half")
+        self.assertIsNone(r.state()["current"])
+        self.assertFalse(r.state()["loop_active"])
+        self.assertIn("STOPPED", r.step("step_next"))
+        (r.root / "AGENT_STOP").unlink()
+        self.assertIn("DISPATCH", r.step("step_next"))
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        for text in ("stopped by the owner", "half of b", "the other half", "M1-001: WIP half of b"):
+            self.assertIn(text, prompt)
+        self.assertEqual(r.state()["current"]["attempt"], 1)
+        self.assertNotIn("handoff", r.state()["tasks"]["M1-001"])
+
+    def test_stop_counts_even_when_the_owner_deleted_the_file(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        self.touch("AGENT_STOP")
+        self.assertEqual(r.write("src/x.py", agent="builder")[0], 2)  # the guard told it to stop
+        (r.root / "AGENT_STOP").unlink()
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: WIP")
+        self.assertIn("without a handoff note", r.step("step_verify"))  # it wrote no claim
+        self.assertEqual(r.state()["tasks"]["M1-001"]["attempts"], 0)
+        r.step("step_next")
+        self.assertIn("no handoff note", (r.root / "harness" / "current_prompt.md").read_text())
+
+    def test_paused_claim_without_a_stop_is_invalid(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: b")
+        r.claim("M1-001", "paused", done="x", todo="y")
+        self.assertIn("is now 'todo'", r.step("step_verify"))
+        self.assertEqual(r.state()["tasks"]["M1-001"]["attempts"], 1)
+
+    def test_soft_stop_after_the_task_agent_resumes_at_the_review(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: b")
+        r.claim("M1-001")
+        self.touch("AGENT_SOFT_STOP")
+        out = r.step("step_verify")
+        self.assertIn("checks passed", out)
+        self.assertIn("STOPPED: AGENT_SOFT_STOP", out)
+        self.assertNotIn("spawn the", out)
+        self.assertEqual(r.state()["current"]["phase"], "awaiting_review")
+        self.assertFalse(r.state()["loop_active"])
+        self.assertIn("STOPPED", r.step("step_next"))  # still there: stops again
+        (r.root / "AGENT_SOFT_STOP").unlink()
+        out = r.step("step_next")
+        self.assertIn("PENDING", out)
+        self.assertIn("spawn the 'evaluator'", out)
+        self.assertTrue(r.state()["loop_active"])
+        (r.root / r.state()["current"]["verdict"]).write_text("VERDICT: PASS\n")
+        self.assertIn("is now 'done'", r.step("step_record"))
+
+    def test_stop_cuts_the_review_short_without_a_failed_try(self):
+        r = self.r
+        self.to_review()
+        self.touch("AGENT_STOP")
+        self.assertEqual(r.write(r.state()["current"]["verdict"], agent="evaluator")[0], 2)
+        out = r.step("step_record")
+        self.assertIn("STOPPED", out)
+        self.assertEqual(r.state()["current"].get("review_tries", 0), 0)
+        (r.root / "AGENT_STOP").unlink()
+        self.assertIn("spawn the 'evaluator'", r.step("step_next"))
+        out = r.step("step_record")  # the new reviewer also wrote nothing: now a failed try
+        self.assertIn("NO VALID VERDICT", out)
+        self.assertEqual(r.state()["current"]["review_tries"], 1)
+
+    def hook_stop(self) -> int:
+        r = self.r
+        return subprocess.run([sys.executable, str(r.root / "harness" / "stop_hook.py")],
+                              input=json.dumps({"session_id": "A"}).encode(), capture_output=True,
+                              env=r.env, timeout=60).returncode
+
+    def test_stop_hook_lets_the_orchestrator_go_only_on_emergency(self):
+        r = self.r
+        r.tasks([task()])
+        r.step("step_next")
+        self.touch("AGENT_STOP")
+        self.assertEqual(self.hook_stop(), 2)
+        self.touch("AGENT_EMERGENCY_STOP")
+        self.assertEqual(self.hook_stop(), 0)
+
+
 class ReverifyTests(HarnessTest):
     """reverify: a task whose work is committed goes to the checks and the reviewer again,
     without a new task agent (Talos M6A-026/028: blocked by a check failing on an owner file)."""

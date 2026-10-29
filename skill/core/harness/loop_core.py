@@ -56,8 +56,13 @@ RESOLUTION_DIR = HARNESS / "resolutions"
 LOG_DIR = HARNESS / "logs"
 QUEUE_FILE = HARNESS / "owner_queue.json"
 STEP_LOCK = HARNESS / "step"  # lock file harness/step.lock
-STOP_FILE = REPO / "AGENT_STOP"
+#: The owner's three stops, from the most patient: soft (after the agent at work), stop (the task
+#: agent commits and hands off, the guard tells it to) and emergency (the guard blocks everything).
 SOFT_STOP_FILE = REPO / "AGENT_SOFT_STOP"
+STOP_FILE = REPO / "AGENT_STOP"
+EMERGENCY_STOP_FILE = REPO / "AGENT_EMERGENCY_STOP"
+#: Start of every guard denial caused by AGENT_STOP (guard.py STOP_PREFIX).
+STOP_DENIAL = "AGENT_STOP is present"
 OPEN_QUESTIONS = REPO / C.OPEN_QUESTIONS_REL
 PRINCIPLES = REPO / C.PRINCIPLES_REL
 HEARTBEAT = LOG_DIR / "guard_heartbeat.json"
@@ -499,6 +504,53 @@ def guard_blocks_note(agent: str, since: float) -> str:
             f"{last.get('tool', '?')} '{target}': {message} (harness/logs/guard_blocks.jsonl)")
 
 
+def stop_requested_since(since: float) -> bool:
+    """True when AGENT_STOP is present, or the guard refused a call because of it since ``since``
+    (the owner may have deleted the file before the step script ran)."""
+    if STOP_FILE.exists():
+        return True
+    try:
+        lines = GUARD_BLOCKS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("time", 0) >= since and str(entry.get("message", "")).startswith(STOP_DENIAL):
+            return True
+    return False
+
+
+def stop_file() -> str:
+    """The name of the stop file present at the repository root (the strongest), else ''."""
+    for path in (EMERGENCY_STOP_FILE, STOP_FILE, SOFT_STOP_FILE):
+        if path.exists():
+            return path.name
+    return ""
+
+
+def spawn_or_stop(doc: dict, state: dict, head: str, then: str) -> str:
+    """``head`` and the instruction to spawn the subagent the state expects, unless a stop file is
+    present: then the loop stops before it. The pending spawn stays in the state and step_next
+    gives it again when the loop restarts, so the task resumes where it stopped."""
+    which = stop_file()
+    if not which:
+        return head + spawn_instruction(state, then)
+    current = state["current"]
+    agent = current["spawn"]["agent"]
+    state["loop_active"] = False
+    event(state, f"{which}: stopped before spawning the {agent} of {current['task_id']}")
+    notify("loop stopped", f"{which}: {current['task_id']} stopped before its {agent}; it resumes "
+           f"there.\n{progress(state)}")
+    save_state(doc, state)
+    return terminal(f"{head}STOPPED: {which} is present at the repository root; the '{agent}' "
+                    f"subagent of {current['task_id']} was not spawned. Delete the file and start the "
+                    f"loop again (/{C.LOOP_COMMAND}): it spawns that subagent first.\n"
+                    "NEXT ACTION: tell the owner and end your turn.", doc, state)
+
+
 def progress(state: dict) -> str:
     counts: dict[str, int] = {}
     for st in state["tasks"].values():
@@ -783,7 +835,8 @@ def shown_check(check: dict) -> dict:
 
 
 def build_prompt(doc: dict, task: dict, token_line: str, steer: str, resolution: str = "",
-                 resolution_by: str = "provisional", interrupted: str = "") -> str:
+                 resolution_by: str = "provisional", interrupted: str = "",
+                 handoff: dict | None = None) -> str:
     findings = ""
     content = open_findings(task["id"])
     if content:
@@ -795,6 +848,8 @@ def build_prompt(doc: dict, task: dict, token_line: str, steer: str, resolution:
         findings += (f"\nThe previous session on this task was interrupted by an API error ({interrupted}) "
                      "before it wrote a claim; it did not count as an attempt. Its commits, if any, are "
                      "on the branch: check them and finish the task.\n")
+    if handoff:
+        findings += handoff_block(handoff)
     steer_block = f"\nOwner steering note (takes precedence over the task text):\n{steer}\n" if steer else ""
     resolution_block = ""
     if resolution and resolution_by == "owner":
@@ -837,6 +892,21 @@ def build_prompt(doc: dict, task: dict, token_line: str, steer: str, resolution:
         "Follow CLAUDE.md and your agent instructions. Work on this task only. Finish by "
         "committing, then writing harness/claim.json. Your final reply is at most 5 lines."
     )
+
+
+def handoff_block(handoff: dict) -> str:
+    """The prompt section of a task whose previous session the owner stopped (AGENT_STOP)."""
+    if handoff.get("done") or handoff.get("todo"):
+        note = (f"What it did: {handoff.get('done') or '(not stated)'}\n"
+                f"What is left: {handoff.get('todo') or '(not stated)'}\n")
+    else:
+        note = "It wrote no handoff note: work out from its commits what is left.\n"
+    if handoff.get("uncommitted"):
+        note += f"It left these files uncommitted: {', '.join(handoff['uncommitted'])}\n"
+    return ("\nThe previous session on this task was stopped by the owner before it finished; it "
+            "did not count as an attempt. Continue from where it left off: do not redo committed "
+            f"work, build on its WIP commits.\n{note}"
+            f"The task's commits so far (git log --oneline):\n{handoff.get('log') or '(none)'}\n")
 
 
 def build_review_prompt(task: dict, base: str, verdict_rel: str, token_line: str,
