@@ -1,4 +1,4 @@
-"""laop_view: live viewer of laop task loops, for the owner.
+"""laop monitor: live viewer of laop task loops, for the owner.
 
 A standalone tool, not part of the harness installed in each repository. Usage, in a terminal of
 its own:
@@ -53,6 +53,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -251,13 +252,13 @@ class Repo:
         text = self.read_file(self.questions_rel())
         return parse_questions(text) if text else []
 
-    def decision(self, kind: str, item_id: str) -> dict | None:
+    def decision(self, kind: str, item_id: str, closed: bool = False) -> dict | None:
         """The open decision ``kind``/``item_id`` of the current snapshot ("doc": an open entry
-        of the open questions file), or None."""
+        of the open questions file; ``closed``: a closed entry too), or None."""
         snap = self.snapshot()
         if kind == "doc":
             return next(({"kind": "doc", "file": snap["questions_file"], **q} for q in snap["questions_doc"]
-                         if q["id"] == item_id and q["open"]), None)
+                         if q["id"] == item_id and (q["open"] or closed)), None)
         return next((d for d in snap["decisions"] if d["kind"] == kind and d["id"] == item_id), None)
 
     def set_stop(self, kind: str | None, scheduled: float | None = None) -> None:
@@ -271,7 +272,7 @@ class Repo:
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         why = (f", scheduled for {dt.datetime.fromtimestamp(scheduled):%Y-%m-%d %H:%M}"
                if scheduled is not None else "")
-        (self.root / STOP_FILES[kind]).write_text(f"Created by laop_view at {stamp}{why}.\n", encoding="utf-8")
+        (self.root / STOP_FILES[kind]).write_text(f"Created by laop monitor at {stamp}{why}.\n", encoding="utf-8")
 
     # ------------------------------------------------------------------ snapshot
 
@@ -653,7 +654,7 @@ class Registry:
 
     def save(self) -> None:
         self.config.parent.mkdir(parents=True, exist_ok=True)
-        data = {"_doc": "Repositories shown by laop_view (viewer.py), with the stops scheduled in them.",
+        data = {"_doc": "Repositories shown by laop monitor (viewer.py), with the stops scheduled in them.",
                 "repos": [{"path": str(r.root), **({"stop_at": r.stop_at} if r.stop_at else {})}
                           for r in self.repos.values()]}
         tmp = self.config.with_name(self.config.name + ".tmp")
@@ -807,10 +808,24 @@ When the owner asks for the decision, or the discussion reaches one, end your re
 exactly in this form, and only one:
 DECISION: {form}
 {how}"""
+#: A decided entry of the open questions file, looked back at: explained, never changed.
+CHAT_REVIEW = """You help the owner of a laop task loop look back at {what}, already decided in this \
+repository. You can read the repository with Read, Grep and Glob and nothing else: you cannot change \
+files or run commands, so never say you did. Reply in {language}.
+The owner reads you to understand a decision taken earlier, often without the project's details in \
+mind. Make each reply stand on its own: explain in plain words the problem as it was, the question, \
+the options that were on the table, what was decided and why, and what it implies now (what was built \
+on it, what it rules out). Do not lean on identifiers the owner would have to look up; when one \
+matters, say in a few words what it is. Be concise; say what you are unsure of. If the owner asks \
+whether the decision still holds, say what you see and why. The decision is not changed here: do not \
+write a DECISION line; the owner reopens the entry in the file if needed."""
+#: The decision goes into the project's files: in their language, not the one of the discussion.
 HOW_COMMAND = ("It is the argument list of harness/owner_tools.py; the owner copies and runs it. A note is plain "
-               "text without double quotes, backslashes, backticks or dollar signs.")
-HOW_DOC = ("It is the text the owner writes after **Decision.** in the entry of {file}, in the style of the "
-           "decided entries there; the owner copies it.")
+               "text without double quotes, backslashes, backticks or dollar signs, written in English (the "
+               "loop's files and agents read it) even when you reply to the owner in another language.")
+HOW_DOC = ("It is the text the owner writes after **Decision.** in the entry of {file}, in the style and the "
+           "language of the decided entries there (English when unsure), even when you reply to the owner in "
+           "another language; the owner copies it.")
 
 
 def chat_intro(repo: Repo, item: dict) -> str:
@@ -818,6 +833,17 @@ def chat_intro(repo: Repo, item: dict) -> str:
     snap = repo.snapshot()
     task = next((t for t in snap["tasks"] if t["id"] == item.get("task")), {})
     lines = []
+    if item["kind"] == "doc" and not item.get("open"):
+        p = repo.project()
+        return "\n\n".join([
+            f"Decided question {item['id']} of {item.get('file')}: {item.get('title', '')}",
+            f"Status: {item.get('status', '')}; it blocked: {item.get('blocks') or 'nothing named'}.",
+            f"Read its whole entry in {item.get('file')} (the section '## {item['id']}:'), its decision after "
+            "**Decision.**, and the entries it refers to; the tasks built on it are in harness/tasks.json.",
+            f"The owner's principles are in {p.get('principles_file', 'docs/owner_principles.md')}.",
+            "Read what you need first. Then start with an explanation the owner can follow without opening "
+            "any file: the problem, the options that were on the table, what was decided and why, and what it "
+            "implies now. Then wait for the owner."])
     if item["kind"] == "doc":
         lines += [f"Open question {item['id']} of {item.get('file')}: {item.get('title', '')}",
                   f"Status: {item.get('status', '')}; blocks: {item.get('blocks') or 'nothing named'}.",
@@ -886,6 +912,8 @@ class Chat:
     def __init__(self, cid: str, repo: Repo, kind: str, item: dict):
         self.id, self.repo, self.kind, self.item_id = cid, repo, kind, item["id"]
         self.item = item
+        #: a decided entry of the open questions file: explained, nothing to apply
+        self.review = kind == "doc" and not item.get("open")
         self.intro = chat_intro(repo, item)
         self.session: str | None = None
         self.entries: list[dict] = []
@@ -909,6 +937,8 @@ class Chat:
                 "provisional": f"the provisional decision {self.item_id}",
                 "doc": f"the open question {self.item_id} of {self.item.get('file')}"}[self.kind]
         lang = self.repo.project().get("owner_language") or "the language the owner writes in"
+        if self.review:
+            return CHAT_REVIEW.format(what=f"the question {self.item_id} of {self.item.get('file')}", language=lang)
         how = HOW_DOC.format(file=self.item.get("file")) if self.kind == "doc" else HOW_COMMAND
         return CHAT_SYSTEM.format(what=what, language=lang, how=how,
                                   form=DECISION_FORMS[self.kind][0].format(id=self.item_id))
@@ -942,7 +972,7 @@ class Chat:
         Returns "" or the reason it was refused; the outcome is added to the discussion."""
         with self.lock:
             e = self.entries[n] if 0 <= n < len(self.entries) else None
-        if not e or not (e.get("command") or e.get("proposal")):
+        if self.review or not e or not (e.get("command") or e.get("proposal")):
             return "That message has no decision to apply."
         if e.get("applied"):
             return "Already applied."
@@ -1021,7 +1051,9 @@ class Chat:
                 if block["text"].startswith("Failed to authenticate"):
                     continue  # reported once, as the turn's error
                 body = DECISION_LINE.sub("", block["text"]).strip()
-                if self.kind == "doc":  # the decision's text, to copy into the file: no command
+                if self.review:  # a decided question: nothing to apply
+                    extra = {}
+                elif self.kind == "doc":  # the decision's text, to copy into the file: no command
                     found = DECISION_LINE.findall(block["text"])
                     extra = {"proposal": found[-1].strip()} if found else {}
                 else:
@@ -1110,7 +1142,7 @@ class Chats:
         return sum(1 for c in self.chats.values() if c.busy)
 
     def start(self, repo: Repo, rid: str, kind: str, item_id: str, fresh: bool) -> tuple[Chat | None, str]:
-        item = repo.decision(kind, item_id)
+        item = repo.decision(kind, item_id, closed=True)  # a decided question can be looked back at
         if item is None:
             return None, "That decision is not open any more."
         cid = hashlib.sha256(f"{rid}|{kind}|{item_id}".encode()).hexdigest()[:16]
@@ -1145,6 +1177,10 @@ class Chats:
 # --------------------------------------------------------------------------- chats of a repository
 
 
+#: Plan usage: read with /usage every minute (each read starts claude for a few seconds; the
+#: windows move slowly), at most this long.
+USAGE_POLL = 60
+USAGE_TIMEOUT = 60
 LOOP_COMMAND = "/laop-start"
 LOOP_COMMAND_FILE = ".claude/commands/laop-start.md"
 #: model aliases (Claude Code resolves each to the latest model of the family)
@@ -1158,7 +1194,7 @@ CONV_MAX_TEXT = 20000
 #: tools whose result the chat shows (its first telling line): the step scripts, subagents, skills
 RESULT_TOOLS = {"Bash", "PowerShell", "Agent", "Task", "Skill"}
 START_LINE = re.compile(r"^\s*`?START LOOP:\s*(.+?)`?\s*$", re.M)
-CONV_SYSTEM = """You are talking with the owner of this repository in the laop viewer, a page that shows \
+CONV_SYSTEM = """You are talking with the owner of this repository in laop monitor, a page that shows \
 the repository's laop task loop. The owner starts the loop with the viewer's Start loop button, which \
 sends {command}, or by asking you. When you suggest that the owner start the loop now, end your reply \
 with one line exactly in this form: START LOOP: <one line on what the loop will do>. The viewer shows \
@@ -1193,11 +1229,65 @@ def result_line(content) -> str:
     return (pick or (lines[0] if lines else ""))[:240]
 
 
+USAGE_LINE = re.compile(r"^\s*Current (session|week \(all models\)):\s*(\d+(?:\.\d+)?)%\s*used"
+                        r"(?:\s*\S\s*resets\s+(.+?))?\s*$", re.M | re.I)
+USAGE_RESET = re.compile(r"(?:([A-Z][a-z]{2})\s+(\d{1,2}),?\s+)?(\d{1,2})(?::(\d\d))?\s*([ap]m)?(?:\s*\(([^)]+)\))?", re.I)
+MONTHS = {m: i + 1 for i, m in enumerate(("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+                                          "oct", "nov", "dec"))}
+
+
+def parse_reset(text: str, now: float) -> float | None:
+    """'Oct 30, 2:30pm (Europe/Berlin)', 'Nov 2, 9pm', '2:30pm' as epoch seconds: the next such
+    time from ``now``, in the time zone named (the local one when it is unknown)."""
+    m = USAGE_RESET.fullmatch(text.strip())
+    if not m:
+        return None
+    mon, day, hour, minute, ampm, zone = m.groups()
+    hour, minute = int(hour), int(minute or 0)
+    if ampm:
+        hour = hour % 12 + (12 if ampm.lower() == "pm" else 0)
+    tz = None
+    if zone:
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(zone)
+        except Exception:  # no time zone data (a packaged app): the local zone, most likely the same
+            tz = None
+    base = dt.datetime.fromtimestamp(now, tz) if tz else dt.datetime.fromtimestamp(now)
+    try:
+        if mon:
+            when = base.replace(month=MONTHS[mon.lower()], day=int(day), hour=hour, minute=minute, second=0,
+                                microsecond=0)
+            if when.timestamp() < now - 86400:  # December for a January reset
+                when = when.replace(year=when.year + 1)
+        else:
+            when = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if when.timestamp() < now:
+                when += dt.timedelta(days=1)
+    except (KeyError, ValueError):
+        return None
+    return when.timestamp()
+
+
+def parse_usage(text: str, now: float | None = None) -> dict:
+    """The plan windows of the text of Claude Code's /usage: {"five_hour": {"used": 0.08,
+    "resets": <epoch>}, "seven_day": {...}}; {} when the text has none."""
+    now = time.time() if now is None else now
+    out = {}
+    for name, pct, reset in USAGE_LINE.findall(text or ""):
+        key = "five_hour" if name.lower() == "session" else "seven_day"
+        out[key] = {"used": float(pct) / 100, "resets": parse_reset(reset, now) if reset else None}
+    return out
+
+
 class PlanUsage:
-    """The owner's plan windows (5 hours, 7 days) as the last answer of any chat reported them."""
+    """The owner's plan windows (5 hours, 7 days): from the answers of the chats, and read every
+    ``USAGE_POLL`` seconds with Claude Code's /usage while a page shows them."""
 
     def __init__(self, path: Path | None):
         self.path, self.data, self.lock = path, {}, threading.Lock()
+        self.wanted = 0.0  # when a page last asked for the usage
+        self.error = ""
         try:
             self.data = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
         except (OSError, ValueError):
@@ -1212,10 +1302,13 @@ class PlanUsage:
             w = windows.get(key)
             if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float)):
                 new[key] = {"used": float(w["utilization"]), "resets": w.get("resetsAt")}
+        self.set(new, info.get("status"))
+
+    def set(self, new: dict, status=None) -> None:
         if not new:
             return
         with self.lock:
-            self.data = {**self.data, **new, "at": time.time(), "status": info.get("status")}
+            self.data = {**self.data, **new, "at": time.time(), "status": status}
             if self.path:
                 try:
                     self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -1224,8 +1317,43 @@ class PlanUsage:
                     pass
 
     def view(self) -> dict:
+        self.wanted = time.time()
         with self.lock:
-            return dict(self.data)
+            return {**self.data, **({"error": self.error} if self.error else {})}
+
+    def read(self) -> None:
+        """One /usage of Claude Code: a local command, no model turn, no tokens."""
+        exe = claude_command()
+        if not exe:
+            self.error = "The claude command was not found."
+            return
+        try:
+            out = subprocess.run([*exe, "-p", "/usage", "--output-format", "json"], cwd=Path.home(),
+                                 env=claude_env(), capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=USAGE_TIMEOUT, creationflags=NO_WINDOW)
+            result = json.loads(out.stdout or "{}").get("result") or ""
+        except (OSError, ValueError, subprocess.TimeoutExpired, AttributeError) as exc:
+            self.error = f"/usage did not answer: {exc}"
+            return
+        found = parse_usage(result)
+        self.error = "" if found else f"/usage: {result.strip()[:200] or 'no answer'}"
+        self.set(found)
+
+    def start_polling(self) -> None:
+        """Read the usage every USAGE_POLL seconds while a page asked for it in the last minute,
+        unless a chat's answer brought it more recently."""
+        def run() -> None:
+            while True:
+                time.sleep(5)
+                now = time.time()
+                if now - self.wanted < 60 and now - self.data.get("at", 0) >= USAGE_POLL:
+                    try:
+                        self.read()
+                    except Exception as exc:  # the poller must outlive one bad round
+                        self.error = str(exc)
+                    if self.error:  # not signed in, no claude: try again later, not every minute
+                        time.sleep(USAGE_POLL * 4)
+        threading.Thread(target=run, name="laop-plan-usage", daemon=True).start()
 
 
 class Conversation:
@@ -1520,6 +1648,8 @@ class Convs:
 
 class Handler(http.server.BaseHTTPRequestHandler):
     registry: Registry
+    #: The desktop window (app.py): brings it forward on a repository (a click on a toast).
+    on_open = None
     chats: Chats = Chats()
     convs: Convs = Convs(None)
 
@@ -1661,6 +1791,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except OSError as exc:
                         failed.append(f"{repo.root}: {exc}")
                 self.send_json(500 if failed else 200, {"ok": not failed, "count": len(targets), "failed": failed})
+            elif url.path == "/api/app/open":
+                # {"repo": <repo id> or "overview"}: from app.py started by a click on a toast
+                rid = str(body.get("repo", ""))
+                if self.on_open is None:
+                    self.send_json(404, {"error": "not the desktop app"})
+                    return
+                if rid != "overview" and self.registry.get(rid) is None:
+                    rid = ""
+                self.on_open(rid)
+                self.send_json(200, {"ok": True})
             elif url.path == "/api/stop/schedule":
                 # {"id": <repo id> or "all", "kind": "soft" | "hard" | "emergency" | null (cancel),
                 #  "at": <epoch seconds>}
@@ -1758,14 +1898,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send(500, f"viewer error: {exc}".encode(), "text/plain; charset=utf-8")
 
 
+class Server(http.server.ThreadingHTTPServer):
+    """A port of its own: on Windows SO_REUSEADDR (http.server's default) lets a second viewer
+    listen on the port of a running one, and the requests reach either."""
+
+    allow_reuse_address = sys.platform != "win32"
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", -5), 1)
+        super().server_bind()
+
+
 def serve(registry: Registry, port: int, open_browser: bool) -> int:
     handler = type("BoundHandler", (Handler,), {"registry": registry,
                                                 "convs": Convs(registry.config.parent / "chats")})
     server = None
     registry.start_scheduler()
+    handler.convs.plan.start_polling()
     for p in range(port, port + 20):
         try:
-            server = http.server.ThreadingHTTPServer(("127.0.0.1", p), handler)
+            server = Server(("127.0.0.1", p), handler)
             break
         except OSError:
             continue
@@ -1774,7 +1927,7 @@ def serve(registry: Registry, port: int, open_browser: bool) -> int:
         return 1
     url = f"http://127.0.0.1:{server.server_address[1]}/"
     names = ", ".join(r["name"] for r in registry.listing()) or "none yet: add one in the page"
-    print(f"laop viewer\n  {url}\n  repositories: {names}\n  list kept in {registry.config}\n"
+    print(f"laop monitor\n  {url}\n  repositories: {names}\n  list kept in {registry.config}\n"
           "  read-only except the stop files; Ctrl+C to stop.")
     if open_browser:
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()

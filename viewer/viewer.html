@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Loop viewer</title>
+<title>laop monitor</title>
 <link rel="icon" id="favicon" href="data:,">
-<!-- laop_view: served by viewer.py, next to this file. -->
+<!-- laop monitor: served by viewer.py, next to this file. -->
 <style>
 :root {
   --bg: #f4f6f9; --panel: #ffffff; --panel2: #f8fafc; --ink: #18212f; --muted: #64748b; --line: #e2e8f0;
@@ -178,10 +178,19 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 .status-grid, .discuss-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 900px) {
   .status-grid { grid-template-columns: minmax(0, .9fr) minmax(0, 1.6fr) minmax(0, .9fr); }
-  .discuss-grid { grid-template-columns: 220px minmax(0, 1fr) minmax(360px, 1.05fr); }
+  /* --chatw: the width of the discussion, set by dragging the line at its left */
+  .discuss-grid { grid-template-columns: 220px minmax(0, 1fr) var(--chatw, minmax(360px, 1.05fr)); }
+  .discuss-grid .col-split { display: block; position: absolute; top: 0; bottom: 0; right: -13px; width: 10px; z-index: 1; cursor: ew-resize; touch-action: none; }
+  .col-split::after { content: ""; position: absolute; top: 12px; bottom: 12px; left: 4px; width: 2px; border-radius: 1px; transition: background-color 150ms ease; }
+  .col-split:hover::after, .col-split:focus-visible::after, .col-split.dragging::after { background: var(--accent); }
+  .col-split:focus-visible { outline: none; }
+  .discuss-grid.nochat .col-split { display: none; }
+  .discuss-grid.resizing { user-select: none; }
   .discuss-grid.nochat { grid-template-columns: 220px minmax(0, 1fr); }
 }
 .discuss-grid.nochat .chat { display: none; }
+.dmain { position: relative; }
+.col-split { display: none; }
 .col { display: flex; flex-direction: column; min-height: 0; }
 .col-now .progress { border-top: 1px solid var(--line); padding-top: 14px; margin: 16px 0 0; }
 .stack { gap: 16px; }
@@ -318,6 +327,7 @@ button.newchat { color: var(--accent); font-weight: 600; font-size: 12.5px; }
 .cdot.err { background: var(--bad); }
 .cdot.desk { background: var(--oa); }
 .usage .meter + .meter { margin-top: 14px; }
+.st-usage .meters { display: grid; gap: 10px 18px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .meter .mh { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 .meter .mh b { flex: 1; font-weight: 600; }
 .meter .track { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin: 5px 0 4px; }
@@ -520,7 +530,7 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
 <div id="overview" class="wrap" hidden></div>
 <div id="repoview" class="wrap">
   <div class="repohead">
-    <h1 id="pname">Loop viewer</h1>
+    <h1 id="pname">laop monitor</h1>
     <span id="pill" class="pill">…</span>
     <span id="meta" class="muted small"></span>
     <span id="nowline" class="nowline" hidden></span>
@@ -571,6 +581,7 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
           <div id="legend" class="legend"></div>
           <div id="stats" class="stats"></div>
         </section>
+        <section class="progress st-usage" id="stusage"><h2>Plan usage</h2><div id="usage2"></div></section>
       </section>
     </div>
     <div class="col stack">
@@ -587,11 +598,13 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
   </div>
   <div id="pv-discuss" class="pane discuss-grid" hidden>
     <nav class="card col dlist" id="dlist" aria-label="Decisions"></nav>
-    <section class="card col"><div id="ddetail" class="scroll"></div></section>
+    <section class="card col dmain"><div id="ddetail" class="scroll"></div>
+      <div id="dsplit" class="col-split" role="separator" aria-orientation="vertical" aria-label="Resize the discussion (double-click: back to the default)" tabindex="0"></div></section>
     <section class="card col chat" aria-label="Discussion with Claude">
       <div class="chat-head"><b id="chattitle">Discuss with Claude</b><span class="spacer"></span>
         <span class="ro" title="Claude can read the repository (Read, Grep, Glob) and nothing else">read-only</span>
-        <button id="chatnew" title="Start this discussion again">New</button></div>
+        <button id="chatnew" title="Start this discussion again">New</button>
+        <button id="chathide" title="Hide the discussion: the question takes the room" hidden>Hide</button></div>
       <div id="chatlog" class="scroll chatlog" aria-live="polite"></div>
       <div id="chatsplit" class="chat-split" role="separator" aria-orientation="horizontal" aria-label="Resize the message box" tabindex="0"></div>
       <form id="chatform" class="chat-form">
@@ -909,7 +922,7 @@ function renderQuestions() {
     : `<div class="empty">No entry in ${esc(data.questions_file || "docs/open_questions.md")}.</div>`);
 }
 /** The whole entry of the open questions file, its decision set apart. */
-function questionDetail(q) {
+function questionDetail(q, offer = false) {
   const body = q.decision ? q.body.slice(0, q.body.lastIndexOf("**Decision.**")).trim() : q.body;
   return `<article class="dc full k-${q.open ? "blocked-question" : q.provisional ? "blocked-owner_action" : "waiting"}"><div class="dc-head"><span class="dc-label">QUESTION ${esc(q.id)}</span> ${qStatus(q)}
       <b>${esc(q.title)}</b></div>
@@ -917,6 +930,7 @@ function questionDetail(q) {
       q.status && "status: " + esc(q.status)].filter(Boolean).join(" · ")}</div>
     <div class="qbody">${md(body)}</div>
     ${q.decision ? `<div class="qdecision"><div class="lbl" style="margin-top:0">Decision</div><div class="qbody">${md(q.decision)}</div></div>` : ""}
+    ${offer ? `<div style="margin-top:12px"><button class="ask" data-review="${esc(q.id)}" title="Claude reads the entry and the repository and explains the decision; it changes nothing">Discuss with Claude</button></div>` : ""}
     <div class="small" style="margin-top:10px"><a data-file="${esc(data.questions_file)}">${esc(data.questions_file)}</a></div></article>`;
 }
 function renderDiscuss() {
@@ -928,7 +942,7 @@ function renderDiscuss() {
     (qs.length ? `<h2>Questions · ${qs.filter((q) => q.open || q.provisional).length} open or to ratify</h2>` + qs.map((q) => qItem(q, x === q)).join("") : ""));
   const entry = discuss && (data.questions_doc || []).find((q) => q.id === discuss.id);
   setHTML($("#ddetail"), !x ? `<div class="empty">${discuss ? esc(discuss.id) + " is not open any more: decided, or the loop moved on." : "Pick a decision or a question."}</div>`
-    : discuss.kind === "doc" ? questionDetail(x)
+    : discuss.kind === "doc" ? questionDetail(x, !x.open && !SNAP && !discuss.show)
     : decisionCard(x, true) + (discuss.kind === "question" && entry ? `<div style="margin-top:18px">${questionDetail(entry)}</div>` : ""));
   renderChat();
 }
@@ -995,10 +1009,14 @@ function renderChat() {
   });
   flush();
   const x = discuss && findItem(discuss.kind, discuss.id), open = discuss && itemOpen(discuss.kind, x);
-  $("#chatform").hidden = $("#chatsplit").hidden = !open || !!SNAP;
-  // nothing to discuss (a closed question, a snapshot): the text takes the room of the discussion
-  $("#pv-discuss").classList.toggle("nochat", !c && (!open || !!SNAP));
-  if (!c && discuss && !open) parts.push(`<div class="empty">${x ? `${esc(discuss.id)} is ${esc(x.status || "closed")}: its text is on the left; a discussion is for open questions.` : "Not open any more."}</div>`);
+  // a decided question: its discussion only on request ("Discuss with Claude", then Hide)
+  const review = !!(discuss && discuss.kind === "doc" && x && !open);
+  $("#chatform").hidden = $("#chatsplit").hidden = !(open || (review && c)) || !!SNAP;
+  $("#chathide").hidden = !review;
+  $("#chatin").placeholder = review ? "Ask about this decision (Ctrl+Enter sends)" : "Ask, or say what you would decide (Ctrl+Enter sends)";
+  // nothing to discuss (a decided question not asked about, a snapshot): the text takes the room
+  $("#pv-discuss").classList.toggle("nochat", review ? !discuss.show : !c && (!open || !!SNAP));
+  if (!c && discuss && !open) parts.push(`<div class="empty">${x ? `${esc(discuss.id)} is ${esc(x.status || "closed")}: its text is on the left.` : "Not open any more."}</div>`);
   else if (!c) parts.push(`<div class="empty">Claude gets the ${discuss && discuss.kind === "doc" ? "question's entry" : "decision, the recommendation and the challenge"}, reads what it needs in the repository and explains it. It cannot change anything.</div>
     ${discuss && !SNAP ? `<div style="margin-top:12px"><button class="ask" data-discuss="${esc(discuss.kind)}" data-did="${esc(discuss.id)}" data-start>Discuss with Claude</button></div>` : ""}`);
   else if (c.busy) parts.push(`<div class="thinking">${c.entries.length ? "Claude is answering" : "Claude is reading the decision"}</div>`);
@@ -1018,8 +1036,9 @@ function absorb(v, whole = false) {
   chat.busy = v.busy; chat.error = v.error;
   renderChat();
 }
-async function openDiscuss(kind, id, fresh = false, start = true) {
-  discuss = { kind, id };
+/** ``show``: a decided question's discussion, opened on request (its panel is hidden otherwise). */
+async function openDiscuss(kind, id, fresh = false, start = true, show = false) {
+  discuss = { kind, id, show };
   setPview("discuss");
   const key = `${active}|${kind}|${id}`;
   if (!fresh && chat && chat.key === key && (chat.id || chat.busy)) { renderChat(); return; }
@@ -1037,7 +1056,8 @@ async function openDiscuss(kind, id, fresh = false, start = true) {
       }
     } catch (e) { /* the server will say so below */ }
   }
-  if (!start || !itemOpen(kind, findItem(kind, id))) { renderChat(); return; }
+  const x = findItem(kind, id);
+  if (!start || !(itemOpen(kind, x) || (show && x))) { renderChat(); return; }
   chat = { key, id: null, entries: [], busy: true, error: "" };
   renderChat();
   const res = await postJSON("/api/chat/start", { repo: active, kind, id, new: fresh });
@@ -1149,7 +1169,7 @@ function meterHTML(label, w, kind) {
   const passed = w.resets && w.resets * 1000 < Date.now();
   const pct = passed ? 0 : Math.round(w.used * 100);
   let when = "";
-  if (passed) when = "reset since the last answer";
+  if (passed) when = "reset since then";
   else if (w.resets && kind === "five") when = "resets in " + dur(w.resets - nowS());
   else if (w.resets) when = "resets " + new Date(w.resets * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
   return `<div class="meter ${pct >= 90 ? "full" : pct >= 70 ? "warn" : ""}" role="meter" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
@@ -1157,11 +1177,16 @@ function meterHTML(label, w, kind) {
     <div class="track"><span class="fill" style="width:${Math.min(100, pct)}%"></span></div>
     <span class="small muted">${esc(when)}</span></div>`;
 }
+/** The plan windows, in the Chat view and under Now in Status: read from Claude Code every minute
+ *  while the page is open, and with each answer of a chat. */
 function renderUsage() {
   const p = cv.plan || {};
-  const html = meterHTML("5-hour window", p.five_hour, "five") + meterHTML("Weekly", p.seven_day, "week");
-  setHTML($("#usage"), html ? html + `<div class="small muted" style="margin-top:10px">Your whole plan, as of ${esc(ago(p.at))}.</div>`
-    : `<div class="small muted">No data yet: it comes with Claude's next answer in a chat.</div>`);
+  const meters = meterHTML("5-hour window", p.five_hour, "five") + meterHTML("Weekly", p.seven_day, "week");
+  const note = meters ? `Your whole plan, as of <span data-ago="${p.at}">${esc(ago(p.at))}</span>.` : "No data yet: it is read from Claude Code every minute.";
+  const err = p.error ? `<div class="small muted" title="${esc(p.error)}">Not read at the last try.</div>` : "";
+  setHTML($("#usage"), meters + `<div class="small muted" style="margin-top:10px">${note}</div>` + err);
+  $("#stusage").hidden = !!SNAP;
+  setHTML($("#usage2"), `<div class="meters">${meters}</div><div class="small muted" style="margin-top:6px">${note}</div>` + err);
 }
 function fillSelect(el, values, names, cur) {
   const html = values.map((v) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(names[v] || v)}</option>`).join("");
@@ -1254,6 +1279,7 @@ async function loadConvs() {
     const j = await r.json();
     const was = cv.list.some((c) => c.busy);
     Object.assign(cv, { list: j.convs || [], discussions: j.discussions || [], plan: j.plan || {}, options: j.options });
+    renderUsage();
     if (!cv.cur || !cv.list.some((c) => c.id === cv.cur)) {
       const saved = store("conv:" + rid);
       cv.cur = cv.list.some((c) => c.id === saved) ? saved : (cv.list.find((c) => !c.earlier) || {}).id || null;
@@ -1710,7 +1736,7 @@ function renderOverview() {
   const stale = repos.length && !repos.every((r) => r.missing || (r.tasks.length === 0 || "time" in r.tasks[0]));
   setHTML($("#overview"), `<div class="ov-top"><h1>Overview</h1><span class="muted">${repos.length} repositories · ${running} running · ${needing} need you</span>
       ${live.length ? `<span class="stops">${stopButtons("all", Object.fromEntries(STOP_KINDS.map((k) => [k, live.every((r) => r.stops[k])])), " all", live.some((r) => STOP_KINDS.some((k) => r.stops[k])))}</span>` : ""}</div>
-    ${stale ? `<div class="att k-blocked-question" style="margin-top:12px"><div class="t">Viewer server out of date</div><div class="b">Restart <code>python viewer.py</code> (laop_view).</div></div>` : ""}
+    ${stale ? `<div class="att k-blocked-question" style="margin-top:12px"><div class="t">Viewer server out of date</div><div class="b">Restart <code>python viewer.py</code> (laop monitor).</div></div>` : ""}
     ${repos.length ? `<div class="ov-grid">${repos.map(overviewCard).join("")}</div>`
       : `<div class="card" style="margin-top:14px">No repository yet. <a data-add>Add one</a>: the path of a repository with a task loop.</div>`}`);
   if (active === "overview") {
@@ -1722,11 +1748,17 @@ function renderOverview() {
  *  through its own API. A browser uses the Notification API. */
 const nativeNotify = () => window.pywebview && window.pywebview.api && window.pywebview.api.notify;
 const canNotify = () => !!nativeNotify() || ("Notification" in window && Notification.permission === "granted");
-function desktopNotify(title, body) {
+/** A notification about repository ``rid``: a click on it shows the viewer on that repository. */
+function desktopNotify(title, body, rid) {
   const nat = nativeNotify();
-  if (nat) { nat(title, body).catch(() => {}); return; }
-  try { new Notification(title, { body }); } catch (err) { /* ignored */ }
+  if (nat) { nat(title, body, rid || "").catch(() => {}); return; }
+  try {
+    const n = new Notification(title, { body });
+    n.onclick = () => { window.focus(); window.laopOpen(rid || "overview"); n.close(); };
+  } catch (err) { /* ignored */ }
 }
+/** Show a repository (or the overview): a click on a notification, or app.py on a toast's click. */
+window.laopOpen = (rid) => { if (rid === "overview" || repos.some((r) => r.id === rid)) switchTo(rid); };
 function notifyOverview(prevRepos) {
   const fresh = {};
   repos.forEach((r) => { if (!r.missing) fresh[r.id] = r.state.events; });
@@ -1736,7 +1768,7 @@ function notifyOverview(prevRepos) {
       const old = new Set(prevEvents[r.id]);
       r.state.events.filter((e) => !old.has(e)).map(parseEvent)
         .filter((e) => /HALT|blocked|gate .* ready|loop finished| done \(|provisional/i.test(e.text))
-        .slice(-3).forEach((e) => desktopNotify(r.name, e.text));
+        .slice(-3).forEach((e) => desktopNotify(r.name, e.text, r.id));
     });
   }
   prevEvents = fresh;
@@ -1744,6 +1776,7 @@ function notifyOverview(prevRepos) {
 function renderAll() {
   if (!data) return;
   renderHeader(); renderProgress(); renderNow(); renderAttention(); renderQuestions(); renderEvents(); renderView(); renderDrawer();
+  renderUsage();
   if (pview === "discuss") renderDiscuss();
   if (pview === "chat") { renderChats(); convPoll(); }  // convPoll runs once at a time
 }
@@ -1817,7 +1850,7 @@ async function pollNow() {
     if (failing) { failing = false; setBanner(null); }
   } catch (e) {
     failing = true;
-    setBanner(`The viewer server does not answer. Is <code>python viewer.py</code> (laop_view) still running? Showing the last data received.`);
+    setBanner(`The viewer server does not answer. Is <code>python viewer.py</code> (laop monitor) still running? Showing the last data received.`);
   } finally { polling = false; }
 }
 async function poll() {
@@ -1991,7 +2024,7 @@ function tick() {
 /* ------------------------------------------------------------ events */
 
 document.addEventListener("click", (ev) => {
-  const el = ev.target.closest("[data-stop],[data-sched],[data-rclose],[data-rtab],[data-add],[data-addpath],[data-copy],[data-task],[data-file],[data-tab],[data-tfilter],[data-zoom],[data-full],[data-close],[data-pview],[data-discuss],[data-question],[data-apply],[data-conv],[data-cdisc],[data-startloop]");
+  const el = ev.target.closest("[data-stop],[data-sched],[data-rclose],[data-rtab],[data-add],[data-addpath],[data-copy],[data-task],[data-file],[data-tab],[data-tfilter],[data-zoom],[data-full],[data-close],[data-pview],[data-discuss],[data-question],[data-apply],[data-conv],[data-cdisc],[data-startloop],[data-review]");
   if (!el) { if (ev.target.id === "modal") $("#modal").hidden = true; return; }
   const ds = el.dataset;
   if (ds.conv) { pickConv(ds.conv); return; }
@@ -2001,6 +2034,7 @@ document.addEventListener("click", (ev) => {
   if (ds.sched !== undefined) { openSchedule(ds.sched); return; }
   if (ds.pview) { if (ds.pview === "discuss") openQuestions(); else setPview(ds.pview); return; }
   if (ds.discuss) { openDiscuss(ds.discuss, ds.did); return; }
+  if (ds.review) { openDiscuss("doc", ds.review, false, true, true); return; }
   if (ds.question) { openQuestionEntry(ds.question); return; }
   if (ds.apply !== undefined) { if (!el.disabled) applyDecision(parseInt(ds.apply, 10)); return; }
   if (ds.rclose) { removeRepo(ds.rclose); return; }
@@ -2097,8 +2131,46 @@ function setChatHeight(h) {
   if (saved > 44) box.style.height = saved + "px";
 }
 $("#chatnew").addEventListener("click", () => {
-  if (discuss && confirm("Start this discussion again? Claude forgets this one.")) openDiscuss(discuss.kind, discuss.id, true);
+  if (discuss && confirm("Start this discussion again? Claude forgets this one.")) openDiscuss(discuss.kind, discuss.id, true, true, discuss.show);
 });
+$("#chathide").addEventListener("click", () => { if (discuss) { discuss.show = false; renderDiscuss(); } });
+/* the width of the discussion in the Questions view: drag the line at its left */
+(function discussSplit() {
+  const split = $("#dsplit"), grid = $("#pv-discuss"), chatBox = () => grid.querySelector(".chat");
+  const setWidth = (w) => {
+    w = Math.max(320, Math.round(w));
+    grid.style.setProperty("--chatw", `clamp(320px, ${w}px, calc(100% - 560px))`);
+    return w;
+  };
+  let start = null;
+  split.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    start = { x: ev.clientX, w: chatBox().offsetWidth };
+    split.setPointerCapture(ev.pointerId);
+    split.classList.add("dragging");
+    grid.classList.add("resizing");
+  });
+  split.addEventListener("pointermove", (ev) => { if (start) setWidth(start.w - (ev.clientX - start.x)); });
+  const end = () => {
+    if (!start) return;
+    start = null;
+    split.classList.remove("dragging");
+    grid.classList.remove("resizing");
+    store("chat-width", String(chatBox().offsetWidth));
+  };
+  split.addEventListener("pointerup", end);
+  split.addEventListener("pointercancel", end);
+  split.addEventListener("dblclick", () => { grid.style.removeProperty("--chatw"); store("chat-width", ""); });
+  split.addEventListener("keydown", (ev) => {
+    const step = ev.key === "ArrowLeft" ? 20 : ev.key === "ArrowRight" ? -20 : 0;
+    if (!step) return;
+    ev.preventDefault();
+    store("chat-width", String(setWidth(chatBox().offsetWidth + step)));
+  });
+  const saved = Number(store("chat-width"));
+  if (saved >= 320) setWidth(saved);
+})();
 /* graph: a drag moves it, the wheel zooms around the pointer (app layout and full screen only) */
 let drag = null, dragged = false;
 document.addEventListener("pointerdown", (ev) => {
@@ -2140,7 +2212,7 @@ $("#notifyBtn").addEventListener("click", async () => {
   if (!notifyOn && nativeNotify()) {
     notifyOn = true; store("notify", "1");
     $("#notifyBtn").textContent = "Notify: on";
-    desktopNotify("laop view", "Notifications on: halts, blocks, gates and finished tasks.");
+    desktopNotify("laop monitor", "Notifications on: halts, blocks, gates and finished tasks.");
     return;
   }
   if (!nativeNotify() && !("Notification" in window)) { alert("This browser has no desktop notifications."); return; }
@@ -2168,7 +2240,7 @@ $("#themeBtn").addEventListener("click", () => {
     $("#rtabs").style.display = "none";
     active = "snapshot";
     update(SNAP);
-    setBanner(`Snapshot of ${esc(SNAP.repo)} taken ${esc(new Date(SNAP.generated * 1000).toLocaleString())}. Not live: run <code>python viewer.py</code> (laop_view) for the live view.`);
+    setBanner(`Snapshot of ${esc(SNAP.repo)} taken ${esc(new Date(SNAP.generated * 1000).toLocaleString())}. Not live: run <code>python viewer.py</code> (laop monitor) for the live view.`);
   } else if (location.protocol === "file:") {
     setBanner(`Open this page through the viewer server: <code>python viewer.py</code> in the viewer folder.`);
   } else {

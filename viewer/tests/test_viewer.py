@@ -1,4 +1,4 @@
-"""Tests of laop_view on a repository with the laop harness installed.
+"""Tests of laop monitor on a repository with the laop harness installed.
 
 The repository is built by the laop skill's test helper (tests/test_harness.py of the skill), found
 in this repository (../skill) or at LAOP_SKILL.
@@ -225,6 +225,16 @@ class ViewerTest(unittest.TestCase):
                 self.assertEqual(json.loads(r.read())["stop_at"], {"kind": "soft", "at": at})
             self.assertEqual(schedule({"id": rid, "kind": None}), 200)
             self.assertIsNone(reg.get(rid).stop_at)
+
+            def app_open(body) -> int:
+                return status(urllib.request.Request(base + "/api/app/open", data=json.dumps(body).encode(),
+                                                     method="POST", headers={"Content-Type": "application/json"}))
+            self.assertEqual(app_open({"repo": rid}), 404)  # viewer.py: no window to bring forward
+            opened = []
+            handler.on_open = staticmethod(opened.append)
+            self.assertEqual(app_open({"repo": rid}), 200)
+            self.assertEqual(app_open({"repo": "unknown"}), 200)
+            self.assertEqual(opened, [rid, ""])  # an unknown repository: the window only
             own = urllib.request.Request(base + "/api/repos/remove", data=json.dumps({"id": rid}).encode(),
                                          method="POST", headers={"Content-Type": "application/json", "Origin": base})
             self.assertEqual(status(own), 200)
@@ -356,6 +366,50 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual(chat.entries[-1]["role"], "applied")
         self.assertIs(chats.find("rid", "question", "Q1"), chat)
         self.assertEqual(self.viewer.shlex.split('decide qid=Q1 verdict=amend note="a b"')[-1], "note=a b")
+
+    def test_a_decided_question_is_explained_never_applied(self):
+        tmp = Path(tempfile.mkdtemp(prefix="laop_viewer_rev_"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "harness").mkdir()
+        (tmp / "harness" / "project.json").write_text('{"open_questions": "q.md"}', encoding="utf-8")
+        (tmp / "q.md").write_text("## Q1: A\n\n- Status: decided\n\n**Decision.** (a), owner.\n", encoding="utf-8")
+        repo = self.viewer.Repo(tmp)
+        self.assertIsNone(repo.decision("doc", "Q1"))  # nothing to decide
+        chats = self.viewer.Chats()
+        old = self.viewer.claude_command
+        self.viewer.claude_command = lambda: None
+        self.addCleanup(setattr, self.viewer, "claude_command", old)
+        chat, why = chats.start(repo, "rid", "doc", "Q1", False)
+        self.assertEqual(why, "")
+        self.assertTrue(chat.review)
+        self.assertIn("Decided question Q1", chat.intro)
+        self.assertNotIn("DECISION:", chat.system_prompt())
+        chat._assistant([{"type": "text", "text": "It was (a).\nDECISION: (b)"}])
+        self.assertEqual(chat.entries[-1]["text"], "It was (a).")
+        self.assertNotIn("proposal", chat.entries[-1])
+        chat.entries[-1]["proposal"] = "(b)"  # even so, nothing is written
+        self.assertIn("no decision", chat.apply(len(chat.entries) - 1))
+        self.assertIn("(a), owner.", (tmp / "q.md").read_text(encoding="utf-8"))
+
+    def test_plan_usage_from_the_usage_command(self):
+        now = self.viewer.dt.datetime(2026, 10, 30, 12, 0).timestamp()
+        text = ("You are currently using your subscription\n\n"
+                "Current session: 8% used · resets Oct 30, 2:30pm (Europe/Berlin)\n"
+                "Current week (all models): 18% used · resets Nov 2, 9pm (Europe/Berlin)\n"
+                "Current week (Fable): 0% used · resets Nov 2, 9pm (Europe/Berlin)\n")
+        u = self.viewer.parse_usage(text, now)
+        self.assertEqual((u["five_hour"]["used"], u["seven_day"]["used"]), (0.08, 0.18))
+        from zoneinfo import ZoneInfo
+        berlin = ZoneInfo("Europe/Berlin")
+        self.assertEqual(u["five_hour"]["resets"], self.viewer.dt.datetime(2026, 10, 30, 14, 30, tzinfo=berlin).timestamp())
+        self.assertEqual(u["seven_day"]["resets"], self.viewer.dt.datetime(2026, 11, 2, 21, 0, tzinfo=berlin).timestamp())
+        dec = self.viewer.dt.datetime(2026, 12, 30, 12, 0).timestamp()
+        self.assertEqual(self.viewer.dt.datetime.fromtimestamp(self.viewer.parse_reset("Jan 2, 9am", dec)).year, 2027)
+        self.assertEqual(self.viewer.parse_usage("Not signed in", now), {})
+        plan = self.viewer.PlanUsage(None)
+        plan.set(u)
+        self.assertEqual(plan.view()["seven_day"]["used"], 0.18)
+        self.assertGreater(plan.wanted, 0)  # a page asked: the poller reads it every minute
 
     def test_applying_a_doc_decision_unblocks_the_waiting_task(self):
         tmp = Path(tempfile.mkdtemp(prefix="laop_viewer_unb_"))

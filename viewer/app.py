@@ -1,28 +1,37 @@
-r"""laop_view as a desktop window: the same server as viewer.py, shown in a native window (pywebview).
+r"""laop monitor as a desktop window: the same server as viewer.py, shown in a native window (pywebview).
 
     python app.py                  window on the repositories in ~/.laop/viewer.json
     python app.py repo=<path>      also watch this repository
     python app.py config=<file>    another list of repositories
+    python app.py open=<repo id>   bring the running window forward on this repository (else start
+                                   one there); a click on a toast runs it as laop-monitor:open?repo=<id>
 
 Needs ``pip install pywebview``. viewer.py is unchanged and stays usable on its own; the server
 listens on 127.0.0.1 and stops when the window closes.
 
+A click on a toast opens the window on the repository it is about: the toast launches the
+``laop-monitor:`` link, registered for the current user (HKCU\Software\Classes\laop-monitor) to run this
+app with ``open=``; that one hands the repository to the running window (its port is in
+~/.laop/app.json) and ends, or starts the window when none runs.
+
 The web view has no desktop notifications of its own: the page sends them through ``Api.notify``,
 shown as Windows toasts (Windows PowerShell and its WinRT classes, nothing to install) under the
 app's own name and icon: at every start the app registers its AppUserModelID for the current user
-(HKCU\Software\Classes\AppUserModelId\laop.view) with the icon copied to ~/.laop/laop-view.png. The window
+(HKCU\Software\Classes\AppUserModelId\laop.monitor) with the icon copied to ~/.laop/laop-monitor.png. The window
 keeps its browser storage (theme, notifications on or off, the open tab) in ~/.laop/webview, and the
 server takes the same port at every start when it is free, so that storage stays with the page.
 """
 
 from __future__ import annotations
 
-import http.server
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import threading
+import urllib.request
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -31,14 +40,17 @@ import viewer
 #: First port tried: the browser storage belongs to the page's origin, port included.
 APP_PORT = 8775
 
-APP_NAME = "laop view"
+APP_NAME = "laop monitor"
 #: The app's AppUserModelID: the window's taskbar identity and the sender of its toasts.
-APP_ID = "laop.view"
+APP_ID = "laop.monitor"
 #: Fallback sender when the registration fails: Windows PowerShell, known to Windows without one.
 POWERSHELL_APP_ID = r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe"
 TOAST_APP_ID = POWERSHELL_APP_ID
 #: The icon, next to app.py or inside the packaged app.
 ICON = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent)) / "assets" / "laop.png"
+#: The link a toast launches when clicked, and where the running window says which port it serves.
+SCHEME = "laop-monitor"
+RUNNING = Path.home() / ".laop" / "app.json"
 TOAST_SCRIPT = """
 $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 $null = [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
@@ -62,7 +74,7 @@ def register_app_id() -> bool:
     except (AttributeError, OSError):
         pass
     try:
-        icon = Path.home() / ".laop" / "laop-view.png"
+        icon = Path.home() / ".laop" / "laop-monitor.png"
         if ICON.is_file():
             icon.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ICON, icon)
@@ -70,17 +82,78 @@ def register_app_id() -> bool:
             winreg.SetValueEx(key, "DisplayName", 0, winreg.REG_SZ, APP_NAME)
             if icon.is_file():
                 winreg.SetValueEx(key, "IconUri", 0, winreg.REG_SZ, str(icon))
+        # the link of a toast: this app (without a console window) with open=<the link>
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}") as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, f"URL:{APP_NAME}")
+            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, rf"Software\Classes\{SCHEME}\shell\open\command") as key:
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, " ".join(f'"{a}"' for a in launch_command()) + ' "open=%1"')
     except OSError:
         return False
     TOAST_APP_ID = APP_ID
     return True
 
 
-def toast(title: str, body: str) -> bool:
-    """Show a Windows toast; False when it could not be shown (not Windows, PowerShell failed)."""
+def launch_command() -> list[str]:
+    """This app: the packaged executable, or app.py with the Python that has no console window."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    exe = Path(sys.executable)
+    quiet = exe.with_name("pythonw.exe")
+    return [str(quiet if quiet.is_file() else exe), str(Path(__file__).resolve())]
+
+
+def repo_of(link: str) -> str:
+    """The repository id of ``laop-monitor:open?repo=<id>`` (or a bare id); "" when there is none."""
+    m = re.search(r"(?:repo=)?\b([0-9a-f]{6,40}|overview)\b", link or "")
+    return m.group(1) if m else ""
+
+
+def hand_over(rid: str) -> bool:
+    """Bring the running window forward on ``rid``; False when no window runs."""
+    try:
+        port = int(json.loads(RUNNING.read_text(encoding="utf-8"))["port"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if sys.platform == "win32":  # this process was started by the click: it may give the focus away
+        import ctypes
+        try:
+            ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY
+        except (AttributeError, OSError):
+            pass
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/app/open", data=json.dumps({"repo": rid}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status == 200
+    except OSError:
+        return False
+
+
+def bring_forward(window, rid: str) -> None:
+    """Show the window in front (restored if minimised) on repository ``rid``."""
+    for step in (window.restore, window.show):
+        try:
+            step()
+        except Exception:  # not every backend has every call
+            pass
+    try:  # Windows gives the focus to a window that asks while on top
+        window.on_top = True
+        window.on_top = False
+    except Exception:
+        pass
+    if rid:
+        window.evaluate_js(f"window.laopOpen && window.laopOpen({json.dumps(rid)})")
+
+
+def toast(title: str, body: str, repo: str = "") -> bool:
+    """Show a Windows toast; False when it could not be shown (not Windows, PowerShell failed).
+    A click on it opens the window on ``repo`` (the overview without one)."""
     if sys.platform != "win32":
         return False
-    xml = (f'<toast><visual><binding template="ToastGeneric"><text>{escape(str(title)[:200])}</text>'
+    link = escape(f"{SCHEME}:open?repo={repo_of(repo) or 'overview'}", {'"': "&quot;"})
+    xml = (f'<toast activationType="protocol" launch="{link}"><visual><binding template="ToastGeneric">'
+           f'<text>{escape(str(title)[:200])}</text>'
            f'<text>{escape(str(body)[:600])}</text>'
            "</binding></visual></toast>")
     env = {**os.environ, "LAOP_TOAST_XML": xml, "LAOP_TOAST_APP": TOAST_APP_ID}
@@ -96,14 +169,14 @@ def toast(title: str, body: str) -> bool:
 class Api:
     """Called by the page as ``window.pywebview.api.<name>``."""
 
-    def notify(self, title: str, body: str) -> bool:
-        return toast(title, body)
+    def notify(self, title: str, body: str, repo: str = "") -> bool:
+        return toast(title, body, repo)
 
 
-def bind(handler) -> http.server.ThreadingHTTPServer:
+def bind(handler) -> viewer.Server:
     for port in [*range(APP_PORT, APP_PORT + 10), 0]:
         try:
-            return http.server.ThreadingHTTPServer(("127.0.0.1", port), handler)
+            return viewer.Server(("127.0.0.1", port), handler)
         except OSError:
             continue
     raise OSError("no free port")
@@ -113,10 +186,14 @@ def main(argv: list[str]) -> int:
     opts: dict[str, str] = {}
     for arg in argv:
         key, sep, value = arg.partition("=")
-        if not sep or key not in ("repo", "config"):
+        if not sep or key not in ("repo", "config", "open"):
             print(__doc__)
             return 2
         opts[key] = value
+
+    start_on = repo_of(opts.get("open", ""))
+    if "open" in opts and hand_over(start_on):
+        return 0  # the running window took it
 
     try:
         import webview
@@ -136,12 +213,20 @@ def main(argv: list[str]) -> int:
                                                        "convs": viewer.Convs(registry.config.parent / "chats")})
     server = bind(handler)
     registry.start_scheduler()
+    handler.convs.plan.start_polling()
     threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
 
-    url = f"http://127.0.0.1:{server.server_address[1]}/"
+    port = server.server_address[1]
+    url = f"http://127.0.0.1:{port}/" + (f"#repo={start_on}" if start_on and start_on != "overview" else "")
     # text_select: pywebview turns text selection off by default; the owner copies from the page
-    webview.create_window(APP_NAME, url, width=1280, height=860, min_size=(800, 500), js_api=Api(),
-                          text_select=True)
+    window = webview.create_window(APP_NAME, url, width=1280, height=860, min_size=(800, 500), js_api=Api(),
+                                   text_select=True)
+    handler.on_open = staticmethod(lambda rid: bring_forward(window, rid))
+    try:
+        RUNNING.parent.mkdir(parents=True, exist_ok=True)
+        RUNNING.write_text(json.dumps({"port": port, "pid": os.getpid()}), encoding="utf-8")
+    except OSError:
+        pass
     storage = Path.home() / ".laop" / "webview"
     storage.mkdir(parents=True, exist_ok=True)
     try:
@@ -149,6 +234,11 @@ def main(argv: list[str]) -> int:
     finally:
         server.shutdown()
         server.server_close()
+        try:  # only this window's own record
+            if json.loads(RUNNING.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                RUNNING.unlink()
+        except (OSError, ValueError, AttributeError):
+            pass
     return 0
 
 

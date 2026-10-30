@@ -1,4 +1,4 @@
-# laop_view
+# laop monitor
 
 Live viewer of laop task loops: one browser page for every repository that runs the
 loop, with an Overview tab (what runs where, what waits behind a question or a gate) and one tab
@@ -43,7 +43,11 @@ move) and long lists scroll inside their card; a narrower window scrolls as one 
 or `open_questions` of `harness/project.json`), open ones and provisional ones (to ratify) first,
 decided ones too. A click shows
 the whole entry and its decision; an open one can be discussed with Claude, who ends with the text
-of the decision for you to write after `**Decision.**`.
+of the decision for you to write after `**Decision.**`. A decided one can be discussed too, to look
+back at it: "Discuss with Claude" under its decision opens the discussion beside it (Hide closes
+it); Claude explains what was decided and why, and nothing can be applied. The line between the
+question and the discussion can be dragged to share the width (a double click goes back to the
+default).
 
 "Discuss with Claude" opens a discussion about one decision. Each turn runs `claude -p` in the
 repository with your Claude Code sign-in (subscription, no API key; sign in once with `claude`
@@ -59,7 +63,9 @@ Discussions live as long as the server.
 
 **Chat** lists the repository's chats on the left (the ones of this run of the viewer, then the
 earlier ones, and the decision discussions) above the plan usage: the 5-hour and weekly windows of
-your subscription, as the last answer of any chat reported them. Each turn runs `claude -p` in the
+your subscription, also shown under Now in Status. The viewer reads them every minute while a page
+is open, with Claude Code's own `/usage` (`claude -p /usage`: no model turn, no tokens; it starts
+`claude` for a few seconds, so not more often), and with every answer of a chat. Each turn runs `claude -p` in the
 repository and resumes the chat's session, with the model, effort and permission mode chosen under
 the message box (they apply from the next turn). Unlike a discussion, a chat is a full Claude Code
 session: the repository's `.claude/settings.json`, its permissions and the loop's hooks apply (no
@@ -81,9 +87,15 @@ one with the x on its tab. The list is kept in `~/.laop/viewer.json`.
 
 `python app.py` (same options but `port` and `browser`) shows the same page in a desktop window
 (`pip install pywebview`). There the "Notify" button sends Windows toasts, because the window has
-no browser notifications; they come from "laop view" with its icon (the app registers its
-AppUserModelID `laop.view` under `HKCU\Software\Classes\AppUserModelId` at every start). The window keeps its settings in `~/.laop/webview` and uses port 8775
-when free, so the theme and the notification choice survive a restart.
+no browser notifications; they come from "laop monitor" with its icon (the app registers its
+AppUserModelID `laop.monitor` under `HKCU\Software\Classes\AppUserModelId` at every start). A click
+on a toast brings the window forward on the repository it is about, or starts it there: the toast
+opens the link `laop-monitor:open?repo=<id>`, which the app registers for the current user
+(`HKCU\Software\Classes\laop-monitor`) to run itself with `open=`; that one hands the repository to
+the running window (its port is in `~/.laop/app.json`) and ends. In a browser, a click on a
+notification does the same in the viewer's tab. The window keeps its settings in `~/.laop/webview`
+and uses port 8775 when free, so the theme and the notification choice survive a restart; a second
+window takes the next free port (on Windows two servers cannot share one).
 
 After replacing `viewer.py`, restart it: the page warns when the running server is older than the
 file.
@@ -95,6 +107,6 @@ file.
 - `viewer.html`: the page, re-read at every request.
 - `app.py`: the desktop window (pywebview) and its Windows toasts.
 - `build.py`: `python build.py` makes the icon (`assets/laop.ico`, `assets/laop.png`, the "a" of the
-  logo) and `dist/laop-view.exe`, one file with the page inside (`pip install pyinstaller pillow`).
+  logo) and `dist/laop-monitor.exe`, one file with the page inside (`pip install pyinstaller pillow`).
 - `tests/test_viewer.py`: `python -m unittest discover -s tests`; builds its test repositories with
   the laop skill's test helper, found at `../skill` or `LAOP_SKILL`.

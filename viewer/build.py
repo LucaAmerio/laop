@@ -1,6 +1,6 @@
 """Build the desktop app: the icon from the logo, then one Windows executable (PyInstaller).
 
-    python build.py               dist/laop-view.exe
+    python build.py               dist/laop-monitor.exe
     python build.py icon          only assets/laop.ico and assets/laop.png
 
 Needs ``pip install pyinstaller pillow pywebview``. The icon is the "a" of the logo on its rounded
@@ -53,7 +53,7 @@ def main(argv: list[str]) -> int:
     sep = ";" if sys.platform == "win32" else ":"
     return subprocess.call([
         sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--windowed",
-        "--name", "laop-view", "--icon", str(ASSETS / "laop.ico"),
+        "--name", "laop-monitor", "--icon", str(ASSETS / "laop.ico"),
         "--add-data", f"{HERE / 'viewer.html'}{sep}.",
         "--add-data", f"{ASSETS / 'laop.png'}{sep}assets",
         "--distpath", str(HERE / "dist"), "--workpath", str(HERE / "build"), "--specpath", str(HERE / "build"),

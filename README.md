@@ -7,7 +7,7 @@ non-decisional open questions on the owner's behalf. Plus a live viewer of the l
 | Folder | What |
 |---|---|
 | [`skill/`](skill/) | The `/laop` Claude Code skill: the harness (`core/`), its installer (`tools/laop.py`: `init`, `adopt`, `upgrade`, `doctor`, `render`), templates and tests. Start from [`skill/SKILL.md`](skill/SKILL.md) and [`skill/core/harness/README.md`](skill/core/harness/README.md). |
-| [`viewer/`](viewer/) | laop view: one browser page (or desktop window) for every repository that runs the loop. Standard library only. See [`viewer/README.md`](viewer/README.md). |
+| [`viewer/`](viewer/) | laop monitor: one browser page (or desktop window) for every repository that runs the loop. Standard library only. See [`viewer/README.md`](viewer/README.md). |
 | [`assets/`](assets/) | Logo. |
 
 ## Install the skill
