@@ -231,7 +231,12 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
   body.app .status-grid, body.app .discuss-grid, body.app .chat-grid { grid-template-rows: minmax(0, 1fr); }
   body.app .chat-side { min-height: 0; }
   body.app .convs { flex: 1; min-height: 0; }
+  /* Now: the task, its phases, the progress and the plan usage stay in place; the details scroll */
+  /* (#now's children are the card's own; the card scrolls only when even that does not fit) */
   body.app .col-now { overflow: auto; flex: 1 1 auto; }
+  body.app #now { display: contents; }
+  body.app .col-now > * { flex: none; }
+  body.app .col-now .now-body { flex: 0 1 auto; min-height: 4.5em; overflow: auto; }
   /* needs you takes what it needs (at most two thirds), the questions the rest */
   body.app .col-att { flex: 0 1 auto; max-height: 66%; }
   body.app .col-q { flex: 1 1 0; min-height: 140px; }
@@ -327,7 +332,13 @@ button.newchat { color: var(--accent); font-weight: 600; font-size: 12.5px; }
 .cdot.err { background: var(--bad); }
 .cdot.desk { background: var(--oa); }
 .usage .meter + .meter { margin-top: 14px; }
-.st-usage .meters { display: grid; gap: 10px 18px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.st-usage .meters { display: grid; gap: 6px 10px; grid-template-columns: auto minmax(40px, 1fr) auto auto; align-items: center; font-size: 13px; }
+.meter.mrow { display: contents; }
+.meter.mrow b { font-weight: 600; }
+.meter.mrow .track { display: block; margin: 0; }
+.meter.mrow .small { text-align: right; white-space: nowrap; }
+/* Now: a long title takes three lines at most (the whole of it on hover) */
+.now-head .ttl { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .meter .mh { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
 .meter .mh b { flex: 1; font-weight: 600; }
 .meter .track { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin: 5px 0 4px; }
@@ -402,6 +413,8 @@ button.stopbtn { color: var(--bad); font-weight: 600; padding: 9px 14px; }
 /* a narrow window scrolls the page, never the graph box too; the app layout fits the graph to the box */
 .graph-box { user-select: none; -webkit-user-select: none; display: flex; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); min-height: 160px; }
 svg.graph { display: block; flex: none; margin: auto; }
+/* room on the right as wide as the details panel covers: the last tasks can be scrolled past it */
+.graph-box .gpad { flex: none; }
 .node .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
 .node rect.stripe { fill: var(--c); }
 .node.k-done .box { fill: var(--cb); stroke: transparent; }
@@ -478,7 +491,10 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
 @keyframes flash { 0% { background: var(--run-bg); } 100% { background: transparent; } }
 
 /* drawer and modal */
-.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.12); z-index: 20; overflow: auto; padding: 16px 18px 40px; }
+.drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.12); z-index: 20; display: flex; flex-direction: column; overflow: hidden; }
+/* the task's head (Close, title, status, attempts) stays; the details scroll under it */
+.drawer .dhead { flex: none; padding: 16px 18px 12px; border-bottom: 1px solid var(--line); }
+.drawer .dbody { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 0 18px 40px; }
 .drawer[hidden], .modal[hidden] { display: none; }
 /* enter: drawer slides from its edge, modal fades and settles from 0.96; exit is instant (faster than enter) */
 .drawer { transition: transform 280ms var(--ease-drawer); }
@@ -772,8 +788,8 @@ function renderNow() {
       idle: "No task in flight. The loop is not running." }[cls] || "";
     const ready = data.tasks.filter((t) => kindOf(t) === "ready");
     if (cls === "idle" && ready.length) msg += ` ${ready.length} task(s) ready: type /${esc(data.project.loop_command || "loop")} in the loop session to continue.`;
-    setHTML(el, `<h2>Now</h2><div class="muted">${msg}</div>` +
-      (data.state.last_task ? `<div class="small muted" style="margin-top:6px">Last task: ${chip(data.state.last_task)}</div>` : ""));
+    setHTML(el, `<h2>Now</h2><div class="now-body"><div class="muted">${msg}</div>` +
+      (data.state.last_task ? `<div class="small muted" style="margin-top:6px">Last task: ${chip(data.state.last_task)}</div>` : "") + "</div>");
     return;
   }
   const t = byId(cur.task_id) || { id: cur.task_id, title: "", st: {} };
@@ -788,9 +804,9 @@ function renderNow() {
   const claim = data.claim && data.claim.task_id === cur.task_id ? data.claim : null;
   const firstDispatch = dispatchTime(cur.task_id);
   setHTML(el, `<h2>Now${cls !== "running" ? " · " + esc(word) : ""}</h2>
-    <div class="now-head"><span class="tid">${esc(t.id)}</span><span class="ttl">${esc(t.title)}</span>${t.st ? kindBadge(t) : ""}</div>
+    <div class="now-head"><span class="tid">${esc(t.id)}</span><span class="ttl" title="${esc(t.title)}">${esc(t.title)}</span>${t.st ? kindBadge(t) : ""}</div>
     <div class="phases">${phases}</div>
-    <dl class="kv">
+    <div class="now-body"><dl class="kv">
       <dt>Working</dt><dd><b>${esc(info.who)}</b>${info.start ? ` for <b data-since="${info.start}">${dur(nowS() - info.start)}</b>` : ""}</dd>
       <dt>Attempt</dt><dd>${cur.attempt ?? "?"} of ${maxA}</dd>
       ${t.time && timeOf(t).work >= 1 ? `<dt>Task time</dt><dd>${timeSpan(t)} of work over ${timeOf(t).dispatches} dispatch(es)</dd>` : ""}
@@ -800,7 +816,7 @@ function renderNow() {
       ${cur.spawn && cur.spawn.prompt_file ? `<dt>Prompt</dt><dd><a data-file="${esc(cur.spawn.prompt_file)}">${esc(cur.spawn.prompt_file)}</a></dd>` : ""}
       ${claim ? `<dt>Claim</dt><dd><b>${esc(claim.status)}</b>: ${esc(claim.summary || "")}</dd>` : ""}
     </dl>
-    <div style="margin-top:8px"><a data-task="${esc(t.id)}">Task details</a></div>`);
+    <div style="margin-top:8px"><a data-task="${esc(t.id)}">Task details</a></div></div>`);
 }
 
 function attentionItems() {
@@ -1164,18 +1180,29 @@ function renderConvList() {
     + (!cv.list.length && !disc.length ? `<div class="empty small">No chat yet: write below, or press Start loop.</div>` : "");
   setHTML($("#convlist"), html);
 }
-function meterHTML(label, w, kind) {
-  if (!w) return "";
+/** A plan window: its use in percent and when it resets ("in 2h 25m", "Mon 21:00"). */
+function meterOf(w, kind) {
   const passed = w.resets && w.resets * 1000 < Date.now();
   const pct = passed ? 0 : Math.round(w.used * 100);
-  let when = "";
-  if (passed) when = "reset since then";
-  else if (w.resets && kind === "five") when = "resets in " + dur(w.resets - nowS());
-  else if (w.resets) when = "resets " + new Date(w.resets * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
-  return `<div class="meter ${pct >= 90 ? "full" : pct >= 70 ? "warn" : ""}" role="meter" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
-    <div class="mh"><b>${esc(label)}</b><span class="pct">${pct}%</span></div>
-    <div class="track"><span class="fill" style="width:${Math.min(100, pct)}%"></span></div>
+  const at = !w.resets || passed ? "" : kind === "five" ? "in " + dur(w.resets - nowS())
+    : new Date(w.resets * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return { pct, at, passed, cls: pct >= 90 ? "full" : pct >= 70 ? "warn" : "" };
+}
+function meterHTML(label, w, kind) {
+  if (!w) return "";
+  const m = meterOf(w, kind), when = m.passed ? "reset since then" : m.at ? "resets " + m.at : "";
+  return `<div class="meter ${m.cls}" role="meter" aria-valuenow="${m.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
+    <div class="mh"><b>${esc(label)}</b><span class="pct">${m.pct}%</span></div>
+    <div class="track"><span class="fill" style="width:${Math.min(100, m.pct)}%"></span></div>
     <span class="small muted">${esc(when)}</span></div>`;
+}
+/** The same on one line (Status, under Now, where the room is counted). */
+function meterRow(label, w, kind) {
+  if (!w) return "";
+  const m = meterOf(w, kind);
+  return `<div class="meter mrow ${m.cls}" role="meter" aria-valuenow="${m.pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
+    <b>${esc(label)}</b><span class="track"><span class="fill" style="width:${Math.min(100, m.pct)}%"></span></span>
+    <span class="pct">${m.pct}%</span><span class="small muted" title="${m.at ? "resets " + esc(m.at) : ""}">${esc(m.passed ? "reset" : m.at)}</span></div>`;
 }
 /** The plan windows, in the Chat view and under Now in Status: read from Claude Code every minute
  *  while the page is open, and with each answer of a chat. */
@@ -1186,7 +1213,9 @@ function renderUsage() {
   const err = p.error ? `<div class="small muted" title="${esc(p.error)}">Not read at the last try.</div>` : "";
   setHTML($("#usage"), meters + `<div class="small muted" style="margin-top:10px">${note}</div>` + err);
   $("#stusage").hidden = !!SNAP;
-  setHTML($("#usage2"), `<div class="meters">${meters}</div><div class="small muted" style="margin-top:6px">${note}</div>` + err);
+  const rows = meterRow("5-hour", p.five_hour, "five") + meterRow("Weekly", p.seven_day, "week");
+  setHTML($("#usage2"), rows ? `<div class="meters" title="Your whole plan, as of ${esc(ago(p.at))}">${rows}</div>${err}`
+    : `<div class="small muted">${note}</div>${err}`);
 }
 function fillSelect(el, values, names, cur) {
   const html = values.map((v) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(names[v] || v)}</option>`).join("");
@@ -1447,6 +1476,8 @@ function layout() {
   return { xy, w: PAD * 2 + n * NW + (n - 1) * GLV, h: PAD * 2 + rows * NH + (rows - 1) * GIN };
 }
 function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
+/** The task whose chain the graph traces: the one under the pointer, else the one selected. */
+const traced = () => hover || (selected && byId(selected) ? selected : null);
 function related(id) {
   const up = new Set([id]), down = new Set([id]);
   const goUp = (x) => (byId(x)?.depends_on || []).forEach((d) => { if (!up.has(d) && byId(d)) { up.add(d); goUp(d); } });
@@ -1472,6 +1503,19 @@ function timeSpan(t, tag = "span") {
   if (t.gate) return tt.gateWait !== null ? `waited ${dur(tt.gateWait)}` : "";
   return tt.work >= 1 ? dur(tt.work) : "";
 }
+/** How much of ``el`` the open details panel covers on the right, in pixels (0 when closed). Its
+ *  width, not its box: the panel slides in, and its box is off screen at first. */
+function drawerCover(el) {
+  const dr = $("#drawer");
+  return dr.hidden ? 0 : Math.max(0, Math.round(el.getBoundingClientRect().right - (window.innerWidth - dr.offsetWidth)));
+}
+/** After a click on a task of the graph: if the details panel now covers it, scroll it out. */
+function revealSelected() {
+  const box = $("#gbox"), node = box && box.querySelector(".node.sel");
+  if (!node || box.offsetParent === null) return;
+  const right = window.innerWidth - $("#drawer").offsetWidth - 24, r = node.getBoundingClientRect();
+  if (r.right > right) box.scrollLeft += r.right - right;
+}
 function renderGraph(el) {
   if (!data.tasks.length) { setHTML(el, `<div class="empty">No tasks: harness/tasks.json is missing or empty.</div>`); return; }
   const { xy, w, h } = layout();
@@ -1483,7 +1527,8 @@ function renderGraph(el) {
   const fit = Math.min(pan ? 1.6 : 1.3, availW / w, availH / h);
   const z = zoomMode === "fit" ? Math.max(0.2, fit) : parseFloat(zoomMode) || 1;
   shownZoom = z;
-  const rel = hover ? related(hover) : null;
+  const rel = traced() ? related(traced()) : null;
+  const cover = drawerCover(el);
   const edges = [];
   data.tasks.forEach((t) => (t.depends_on || []).forEach((d) => {
     if (!xy[d]) return;
@@ -1522,7 +1567,7 @@ function renderGraph(el) {
   });
   setHTML(el, `<div class="graph-box" id="gbox"><svg class="graph ${rel ? "hl" : ""}" width="${Math.round(w * z)}" height="${Math.round(h * z)}" viewBox="0 0 ${w} ${h}">
     <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--wait)"/></marker></defs>
-    ${edges.join("")}${nodes.join("")}</svg></div>
+    ${edges.join("")}${nodes.join("")}</svg>${cover ? `<span class="gpad" style="width:${cover}px"></span>` : ""}</div>
     <div class="small muted" style="margin-top:6px">Left to right in dependency order; times are work time (agent, checks, review, resolver). Hover a task to trace what it needs and what waits on it; click for details.${pan ? " Wheel to zoom, drag to move." : ""}</div>`);
 }
 
@@ -1599,9 +1644,12 @@ function renderDrawer() {
   else if (k.startsWith("blocked")) cmds.push(OT + " unblock task=" + t.id, OT + " resume task=" + t.id);
   if (!t.gate && k !== "done") cmds.push(`${OT} allow_path task=${t.id} path=<rel>`);
   const checks = (t.acceptance || []).map((c) => `<div><code>${esc(JSON.stringify(c))}</code></div>`).join("");
-  setHTML(dr, `<button class="close" data-close="drawer">Close</button>
+  const body = dr.querySelector(".dbody"), keep = body && dr.dataset.task === t.id ? body.scrollTop : 0;
+  dr.dataset.task = t.id;
+  setHTML(dr, `<div class="dhead"><button class="close" data-close="drawer">Close</button>
     <div class="muted small">${esc(t.gate ? "owner gate" : t.agent + (t.review === false ? " · no review" : " → " + (t.reviewer || "evaluator")))}</div>
-    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)} <span class="small muted">${t.gate ? "" : `attempts ${st.attempts || 0} of ${maxA}`}</span>
+    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)} <span class="small muted">${t.gate ? "" : `attempts ${st.attempts || 0} of ${maxA}`}</span></div>
+    <div class="dbody">
     ${st.blocked_reason ? `<div class="sec"><h4>Blocked (${esc(st.block_type || "question")})</h4><div class="box-text prewrap">${esc(st.blocked_reason)}</div></div>` : ""}
     ${timeSection(t)}
     ${t.description ? `<div class="sec"><h4>Description</h4><div class="box-text prewrap">${esc(t.description)}</div></div>` : ""}
@@ -1613,7 +1661,8 @@ function renderDrawer() {
     ${st.reviewer_notes ? `<div class="sec"><h4>Reviewer notes</h4><details><summary>${esc(clip(st.reviewer_notes.split("\n")[0], 80))}</summary><div class="box-text prewrap" style="margin-top:6px">${esc(st.reviewer_notes)}</div></details></div>` : ""}
     ${files.length ? `<div class="sec"><h4>Verdicts and resolutions</h4>${files.map((f) => `<div><a data-file="${esc(f.path)}">${esc(f.path)}</a> <span class="small muted" data-ago="${f.mtime}">${ago(f.mtime)}</span></div>`).join("")}</div>` : ""}
     ${own ? `<div class="sec"><h4>Commits of this task</h4>${own}</div>` : ""}
-    ${cmds.length ? `<div class="sec"><h4>Owner commands</h4>${cmds.map(cmd).join("")}</div>` : ""}`);
+    ${cmds.length ? `<div class="sec"><h4>Owner commands</h4>${cmds.map(cmd).join("")}</div>` : ""}</div>`);
+  if (keep) dr.querySelector(".dbody").scrollTop = keep;  // a poll redrew it: same place
 }
 function when(ts) { return ts ? new Date(ts * 1000).toLocaleString() : ""; }
 function timeSection(t) {
@@ -2046,7 +2095,7 @@ document.addEventListener("click", (ev) => {
     if (navigator.clipboard) navigator.clipboard.writeText(ds.copy).then(done, () => prompt("Copy:", ds.copy));
     else prompt("Copy:", ds.copy);
   } else if (ds.file) openFile(ds.file);
-  else if (ds.task) { selected = ds.task; renderDrawer(); if (tab === "graph") renderView(); }
+  else if (ds.task) { selected = ds.task; renderDrawer(); if (tab === "graph") { renderView(); revealSelected(); } }
   else if (ds.tab) { tab = logTab = ds.tab; store("tab", tab); renderView(); }
   else if (ds.tfilter) { tfilter = ds.tfilter; renderView(); }
   else if (ds.close === "drawer") { selected = null; renderDrawer(); if (tab === "graph") renderView(); }
@@ -2067,7 +2116,7 @@ document.addEventListener("mouseover", (ev) => {
 function traceHover() {
   const svg = $("svg.graph");
   if (!svg) return;
-  const rel = hover ? related(hover) : null;
+  const rel = traced() ? related(traced()) : null;
   svg.classList.toggle("hl", !!rel);
   svg.querySelectorAll(".node").forEach((n) => n.classList.toggle("on", !!rel && rel.has(n.dataset.task)));
   svg.querySelectorAll(".edge").forEach((e) => e.classList.toggle("on", !!rel && rel.has(e.dataset.from) && rel.has(e.dataset.to)));
