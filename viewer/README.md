@@ -7,11 +7,16 @@ tasks and why, questions to decide, provisional decisions, events, log, commits)
 
 Separate from laop: nothing is installed in the repositories. It reads their `harness/` files
 (state, tasks, log) and never writes them on its own. It changes a repository only when you ask:
-a decision you apply from a discussion with Claude (below), and the stop files: the "Soft stop", "Stop" and "Emergency stop" buttons create `AGENT_SOFT_STOP`
+a decision you apply from a discussion with Claude (below), what you ask Claude in a chat (below),
+and the stop files: the "Soft stop", "Stop" and "Emergency stop" buttons create `AGENT_SOFT_STOP`
 (the agent at work finishes), `AGENT_STOP` (the task agent commits and hands off) or
 `AGENT_EMERGENCY_STOP` (every tool call blocked at once, work in progress lost) at the root of a
 repository, and "Clear stops" removes them; "Stop" and "Emergency stop" ask for confirmation first.
-The Overview has the same buttons for every watched repository at once.
+The Overview has the same buttons for every watched repository at once. "Schedule…" creates one of
+the three stop files at a date and time instead: the viewer keeps it in its list of repositories
+and creates the file when the time comes (it must be running then; a stop missed while it was
+closed is created when it starts again). The button then shows which stop and when; a click
+changes or cancels it.
 
 ## Use
 
@@ -24,15 +29,19 @@ python viewer.py config=<file>        another list of repositories
 python viewer.py repo=<path> snapshot=<file>   one self-contained HTML file, then exit
 ```
 
-Each repository has two views. **Status** shows what runs now, the progress, the events and what
-needs you: every gate, question and provisional decision explained (what to check, the question,
-the resolver's recommendation, the challenger's verdict) with its `owner_tools.py` command to copy.
-**Work** holds the dependency graph, the tasks, the loop log, the commits and the files. In a
+Each repository has five views, on a row of their own with the stop buttons. **Chat** is Claude
+Code in the repository, as in the desktop app (below). **Status** shows what runs now, the
+progress, the events and what needs you: every gate, question and provisional decision explained
+(what to check, the question, the resolver's recommendation, the challenger's verdict) with its
+`owner_tools.py` command to copy. **Questions** opens the decisions and the questions with their
+discussion (below). **Graph** is the dependency graph, left to right. **Logs** holds the tasks, the
+loop log, the commits and the files. In a
 window at least 900×600 the page does not scroll: the graph fits its box (wheel to zoom, drag to
 move) and long lists scroll inside their card; a narrower window scrolls as one page.
 
 **Questions** (in Status) lists every entry of the open questions file (`docs/open_questions.md`,
-or `open_questions` of `harness/project.json`), open ones first, decided ones too. A click shows
+or `open_questions` of `harness/project.json`), open ones and provisional ones (to ratify) first,
+decided ones too. A click shows
 the whole entry and its decision; an open one can be discussed with Claude, who ends with the text
 of the decision for you to write after `**Decision.**`.
 
@@ -47,6 +56,25 @@ question waiting for `decide`, a provisional decision), or writes the decision a
 the file, and committing nothing). Only the decision the server took from Claude's reply and
 checked is applied, never text sent by the page. Going back to an item resumes its discussion.
 Discussions live as long as the server.
+
+**Chat** lists the repository's chats on the left (the ones of this run of the viewer, then the
+earlier ones, and the decision discussions) above the plan usage: the 5-hour and weekly windows of
+your subscription, as the last answer of any chat reported them. Each turn runs `claude -p` in the
+repository and resumes the chat's session, with the model, effort and permission mode chosen under
+the message box (they apply from the next turn). Unlike a discussion, a chat is a full Claude Code
+session: the repository's `.claude/settings.json`, its permissions and the loop's hooks apply (no
+MCP servers). Nobody can answer a permission prompt there, so a tool call the mode and the settings
+do not allow is refused, and the chat says which. The bar in the chat's head is its context window.
+A message sent while Claude works waits and goes with the next turn; Stop ends the turn.
+
+**Start loop** sends `/laop-start` in the chat, which becomes the loop's orchestrator; the loop
+runs until it finishes, halts or stops, its steps shown one per line. Claude can also propose
+starting it (a START LOOP card with the same button), and asking it in words works the same: the
+view follows `orchestrator_session` in `harness/state.json`, not the button. A message you write
+in that chat takes the loop back, as in the desktop app. **Continue in desktop app** opens the
+chat's session in the Claude desktop app (`claude --desktop --resume`, the same session id), for
+its reply, fork and side chat; the chat here stops taking messages until **Take back here**. Chats
+are kept in `~/.laop/chats` (one JSON file each) and come back after a restart.
 
 Add a repository with the "+" tab (it asks for the path and lists the loops found nearby), remove
 one with the x on its tab. The list is kept in `~/.laop/viewer.json`.
@@ -63,7 +91,7 @@ file.
 ## Files
 
 - `viewer.py`: the server (standard library only). Listens on 127.0.0.1 and answers only its own
-  page (Host and Origin checks; changes to the list and the stop files accept JSON only).
+  page (Host and Origin checks; every change, chats included, accepts JSON only).
 - `viewer.html`: the page, re-read at every request.
 - `app.py`: the desktop window (pywebview) and its Windows toasts.
 - `build.py`: `python build.py` makes the icon (`assets/laop.ico`, `assets/laop.png`, the "a" of the

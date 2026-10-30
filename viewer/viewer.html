@@ -37,6 +37,7 @@
     --bad: #f87171;   --bad-bg: #3a1717;
     --gate: #facc15;  --gate-bg: #33290a;
     --code-bg: #0f1520;
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
@@ -45,6 +46,7 @@
   --done: #4ade80;  --done-bg: #12301f; --run: #60a5fa; --run-bg: #132743; --ready: #2dd4bf; --ready-bg: #0f2e2c;
   --wait: #7c8aa0;  --wait-bg: #1b2331; --q: #fbbf24; --q-bg: #35280c; --oa: #c4b5fd; --oa-bg: #2a1f47;
   --bad: #f87171;   --bad-bg: #3a1717; --gate: #facc15; --gate-bg: #33290a; --code-bg: #0f1520;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -87,6 +89,9 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 .rtab .x { color: var(--muted); border-radius: 4px; padding: 0 3px; line-height: 1; }
 .rtab.add { font-weight: 800; color: var(--accent); }
 .repohead { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; margin-top: 14px; }
+/* the views and the stops have a row of their own: a long task title never moves them */
+.repobar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 10px; }
+.repohead .nowline { flex: 1 1 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .repohead h1 { font-size: 20px; margin: 0; }
 .ov-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; margin-top: 14px; }
 .ov-top h1 { font-size: 20px; margin: 0; }
@@ -138,6 +143,18 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 .inner.confirm.emergency .mh b { font-size: 16px; letter-spacing: .04em; text-transform: uppercase; }
 .inner.confirm.emergency .warn { background: var(--bad-bg); color: var(--bad); border: 1px solid var(--bad); border-radius: 8px; padding: 10px 12px; font-weight: 600; }
 .stops button:disabled { opacity: .55; cursor: default; transform: none; }
+/* a scheduled stop: the button says which and when */
+.stops button.sched.on { color: var(--q); border-color: var(--q); border-style: dashed; }
+.stops button.sched.on.emergency-at { color: var(--bad); border-color: var(--bad); }
+.sopts { display: flex; flex-direction: column; gap: 6px; }
+.sopt { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
+.sopt:has(input:checked) { border-color: var(--q); background: var(--q-bg); }
+.sopt input { margin-top: 3px; }
+.swhen { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.swhen input { font: inherit; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.swhen button { font-size: 12.5px; padding: 3px 10px; }
+.confirm .err { color: var(--bad); font-weight: 600; }
+.confirm .err:empty { display: none; }
 #banner { display: none; margin: 10px 0 0; padding: 0 16px; }
 #banner div { padding: 8px 12px; border-radius: 8px; background: var(--q-bg); color: var(--q); font-weight: 600; }
 
@@ -150,7 +167,7 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 .stats b { color: var(--ink); font-weight: 600; }
 
 [hidden] { display: none !important; }
-/* project views: Status (now, needs you, events), Work (graph, tasks, log...), a discussion */
+/* project views: Chat, Status (now, needs you, events), Questions (a discussion), Graph, Logs (tasks, log...) */
 .ptabs { display: inline-flex; gap: 2px; padding: 3px; border-radius: 9px; background: var(--line); }
 .ptabs button { border: 0; background: transparent; color: var(--muted); font-weight: 600; padding: 5px 14px; border-radius: 7px; display: inline-flex; align-items: center; gap: 7px; }
 .ptabs button.on { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(15,23,42,.14); }
@@ -178,6 +195,8 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
 @media (hover: hover) and (pointer: fine) { .qitem:hover { background: var(--panel2); } }
 .qst { font-size: 11px; font-weight: 600; padding: 0 7px; border-radius: 999px; white-space: nowrap; background: var(--wait-bg); color: var(--wait); }
 .qst.open { background: var(--q-bg); color: var(--q); }
+.qst.prov { background: var(--oa-bg); color: var(--oa); }
+.cnt.q { background: var(--q-bg); color: var(--q); font-weight: 700; }
 .qst.decided { background: var(--done-bg); color: var(--done); }
 .qbody { font-size: 14px; overflow-wrap: anywhere; }
 .qbody p { margin: 0 0 10px; }
@@ -200,7 +219,9 @@ header .brand { display: block; height: 26px; width: auto; color: var(--ink); fl
   body.app { height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
   body.app #repoview { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
   body.app .pane { flex: 1; min-height: 0; }
-  body.app .status-grid, body.app .discuss-grid { grid-template-rows: minmax(0, 1fr); }
+  body.app .status-grid, body.app .discuss-grid, body.app .chat-grid { grid-template-rows: minmax(0, 1fr); }
+  body.app .chat-side { min-height: 0; }
+  body.app .convs { flex: 1; min-height: 0; }
   body.app .col-now { overflow: auto; flex: 1 1 auto; }
   /* needs you takes what it needs (at most two thirds), the questions the rest */
   body.app .col-att { flex: 0 1 auto; max-height: 66%; }
@@ -273,6 +294,66 @@ button.apply:disabled { opacity: .5; cursor: default; }
 .chat-row { display: flex; gap: 8px; align-items: flex-end; }
 .chat-row textarea { flex: 1; font: inherit; font-size: 14px; color: inherit; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; resize: none; min-height: 44px; }
 .chat-row button { padding: 9px 16px; font-weight: 600; }
+/* chats of the repository: the list and plan usage on the left, the chat on the right */
+.chat-grid { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 900px) { .chat-grid { grid-template-columns: 270px minmax(0, 1fr); } }
+.chat-side > .card + .card { margin: 0; }
+.convs-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.convs-head h2 { margin: 0; }
+button.newchat { color: var(--accent); font-weight: 600; font-size: 12.5px; }
+.convgrp { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 600; padding: 10px 6px 3px; }
+.convgrp:first-child { padding-top: 2px; }
+.conv { display: flex; flex-direction: column; gap: 1px; width: 100%; text-align: left; border: 1px solid transparent; background: none; border-radius: 9px; padding: 7px 9px; margin-bottom: 2px; }
+.conv .cn { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 13.5px; min-width: 0; }
+.conv .cn span.t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv .cs { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv.on { background: var(--run-bg); border-color: color-mix(in srgb, var(--run) 30%, transparent); }
+.conv.old .cn { font-weight: 500; color: var(--muted); }
+@media (hover: hover) and (pointer: fine) { .conv:hover { background: var(--panel2); } .conv.on:hover { background: var(--run-bg); } }
+.cdot { width: 8px; height: 8px; border-radius: 50%; background: var(--line); flex: none; }
+.cdot.busy { background: var(--run); animation: blink 2s infinite; }
+.cdot.loop { background: var(--run); }
+.cdot.idle { background: var(--done); }
+.cdot.wait { background: var(--q); }
+.cdot.err { background: var(--bad); }
+.cdot.desk { background: var(--oa); }
+.usage .meter + .meter { margin-top: 14px; }
+.meter .mh { display: flex; align-items: baseline; gap: 6px; font-size: 13px; }
+.meter .mh b { flex: 1; font-weight: 600; }
+.meter .track { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; margin: 5px 0 4px; }
+.meter .fill { display: block; height: 100%; border-radius: 5px; background: var(--run); }
+.meter.warn .fill { background: var(--q); } .meter.warn .pct { color: var(--q); }
+.meter.full .fill { background: var(--bad); } .meter.full .pct { color: var(--bad); }
+.meter .pct { font-weight: 700; }
+.mc-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.mc-title .small { overflow-wrap: anywhere; }
+.ctx { width: 220px; display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.ctx .ch { display: flex; align-items: baseline; gap: 6px; }
+.ctx .ch span:nth-child(2) { flex: 1; color: var(--muted); }
+.ctx .track { height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.ctx .fill { display: block; height: 100%; background: var(--ready); }
+.ctx.warn .fill { background: var(--q); } .ctx.full .fill { background: var(--bad); }
+button.desk { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 6px 12px; }
+.mtools { display: flex; flex-direction: column; gap: 3px; font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; font-size: 12px; color: var(--muted); }
+.mtools span { overflow-wrap: anywhere; }
+.mtools .r { color: var(--ink); opacity: .75; }
+.mtools .bad { color: var(--bad); }
+.msg-u.queued { opacity: .55; }
+.msg-u.dropped { opacity: .4; text-decoration: line-through; }
+.msg-u .qn { display: block; font-size: 11px; opacity: .8; margin-top: 2px; }
+.startcard { border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--run-bg) 60%, var(--panel)); border-radius: 10px; padding: 10px 14px; margin-top: 8px; }
+.startcard .dc-label { color: var(--accent); }
+.startcard .what { margin-top: 4px; font-size: 13.5px; }
+.cinfo { font-size: 12.5px; color: var(--muted); text-align: center; }
+.cdenied { background: var(--q-bg); color: var(--q); border-radius: 8px; padding: 7px 11px; font-size: 12.5px; }
+.mc-opts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12.5px; }
+.mc-opts label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.mc-opts select { font: inherit; color: var(--ink); background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 3px 6px; }
+button.startloop { border-color: var(--accent); color: var(--accent); font-weight: 600; display: inline-flex; align-items: center; gap: 7px; padding: 5px 14px; }
+button.startloop:disabled, button.desk:disabled, #mcsend:disabled { opacity: .5; cursor: default; }
+.looptag { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; color: var(--run); background: var(--run-bg); border-radius: 999px; padding: 3px 12px; }
+.looptag.other { color: var(--muted); background: var(--wait-bg); }
+button.stopbtn { color: var(--bad); font-weight: 600; padding: 9px 14px; }
 .graph-box.panning { cursor: grabbing; }
 @media (min-width: 900px) and (min-height: 600px) { body.app .graph-box { cursor: grab; } }
 
@@ -309,7 +390,7 @@ button.apply:disabled { opacity: .5; cursor: default; }
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 12px; }
 .tabs .spacer { flex: 1; }
 /* a narrow window scrolls the page, never the graph box too; the app layout fits the graph to the box */
-.graph-box { display: flex; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); min-height: 160px; }
+.graph-box { user-select: none; -webkit-user-select: none; display: flex; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); min-height: 160px; }
 svg.graph { display: block; flex: none; margin: auto; }
 .node .box { fill: var(--panel); stroke: var(--line); stroke-width: 1.2; }
 .node rect.stripe { fill: var(--c); }
@@ -443,8 +524,42 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
     <span id="pill" class="pill">…</span>
     <span id="meta" class="muted small"></span>
     <span id="nowline" class="nowline" hidden></span>
-    <span id="stops" class="stops"></span>
+  </div>
+  <div class="repobar">
     <nav id="ptabs" class="ptabs" aria-label="Project views"></nav>
+    <span id="stops" class="stops"></span>
+  </div>
+  <div id="pv-chat" class="pane chat-grid" hidden>
+    <aside class="col stack chat-side" aria-label="Chats in this repository">
+      <section class="card col convs">
+        <div class="convs-head"><h2>Chats</h2><span class="spacer"></span><button id="convnew" class="newchat">+ New</button></div>
+        <div id="convlist" class="scroll"></div>
+      </section>
+      <section class="card usage" aria-label="Plan usage"><h2>Plan usage</h2><div id="usage"></div></section>
+    </aside>
+    <section class="card col chat mchat" aria-label="Chat with Claude">
+      <div class="chat-head">
+        <div class="mc-title"><b id="mctitle">Chat</b><span id="mcsub" class="small muted"></span></div>
+        <span class="spacer"></span>
+        <div id="mcctx" class="ctx" hidden></div>
+        <button id="mcdesk" class="desk" title="Open this chat's session in the Claude desktop app" hidden><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M9 2h5v5"/><path d="M14 2 7.5 8.5"/><path d="M12 9.5V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3.5"/></svg>Continue in desktop app</button>
+      </div>
+      <div id="mclog" class="scroll chatlog" aria-live="polite"></div>
+      <form id="mcform" class="chat-form">
+        <div id="mcnote" class="small muted" hidden></div>
+        <div class="chat-row"><textarea id="mcin" rows="2" aria-label="Your message" placeholder="Message Claude (Ctrl+Enter sends)"></textarea>
+          <button type="button" id="mcstop" class="stopbtn" hidden>Stop</button>
+          <button type="submit" id="mcsend" class="active">Send</button></div>
+        <div class="mc-opts">
+          <label>Model <select id="mcmodel"></select></label>
+          <label>Effort <select id="mceffort"></select></label>
+          <label title="Nobody can answer a permission prompt here: what the mode and the repository's settings do not allow is refused">Permissions <select id="mcmode"></select></label>
+          <span id="mcnext" class="small muted" hidden>applies from the next turn</span>
+          <span class="spacer"></span>
+          <span id="mcloop"></span>
+        </div>
+      </form>
+    </section>
   </div>
   <div id="pv-status" class="pane status-grid">
     <div class="col stack">
@@ -493,7 +608,8 @@ pre.log { margin: 0; max-height: 70vh; overflow: auto; background: var(--code-bg
 "use strict";
 const SNAP = window.LAOP_SNAPSHOT || null;
 const POLL_MS = 2000, STALL_MIN = 15;
-const TABS = [["graph", "Graph"], ["tasks", "Tasks"], ["log", "Loop log"], ["commits", "Commits"], ["files", "Files"]];
+// the tabs of the Logs view (the graph has a view of its own)
+const TABS = [["tasks", "Tasks"], ["log", "Loop log"], ["commits", "Commits"], ["files", "Files"]];
 const KINDS = {
   "done": "Done", "running": "Running", "interrupted": "In progress, no step", "ready": "Ready",
   "waiting": "Waiting", "blocked-question": "Blocked: question", "blocked-owner_action": "Blocked: owner action",
@@ -504,11 +620,15 @@ const OT = "python harness/owner_tools.py";
 
 let data = null, etag = null, lastOk = 0, failing = false, selected = null, seenEvents = null;
 let repos = [], ovEtag = null, active = null, prevEvents = {};
-let tab = store("tab") || "graph", zoomMode = store("zoom") || "fit", shownZoom = 1, hover = null;
-let orient = store("orient") === "v" ? "v" : "h";
+let logTab = TABS.some(([k]) => k === store("tab")) ? store("tab") : "tasks", tab = "graph";
+let zoomMode = store("zoom") || "fit", shownZoom = 1, hover = null;
 let tfilter = "all", tquery = "", notifyOn = store("notify") === "1";
-// project view: "status", "work" or "discuss" (a decision and its discussion with Claude)
-let pview = store("pview") === "work" ? "work" : "status", discuss = null, chat = null, chatPolling = false;
+// project view: "chat", "status", "discuss" (the decisions and questions, a discussion with Claude),
+// "graph" or "logs" (tasks, loop log, commits, files); "work" was the graph and the logs together
+let pview = { work: logTab === store("tab") ? "logs" : "graph", chat: "chat", graph: "graph", logs: "logs" }[store("pview")] || "status";
+let discuss = null, chat = null, chatPolling = false;
+/* the chats of the active repository: list, the one shown, plan usage, the choices offered */
+const cv = { list: [], discussions: [], plan: {}, options: null, cur: null, conv: null, polling: false };
 
 function store(k, v) {
   try { if (v === undefined) return localStorage.getItem("laop-viewer-" + k); localStorage.setItem("laop-viewer-" + k, v); }
@@ -592,11 +712,16 @@ function renderHeader() {
   $("#meta").textContent = [d.milestone && "milestone " + d.milestone, d.branch && "branch " + d.branch, d.head, p.version && "laop " + p.version].filter(Boolean).join(" · ");
   const pill = $("#pill"); pill.className = "pill " + cls; pill.textContent = word;
   setHTML($("#stops"), SNAP ? "" : stopButtons(active, d.stops, ""));
-  const n = needsOf(d).n;
-  setHTML($("#ptabs"), `<button data-pview="status" class="${pview !== "work" ? "on" : ""}">Status${n ? ` <span class="cnt" title="needs you">${n}</span>` : ""}</button>
-    <button data-pview="work" class="${pview === "work" ? "on" : ""}">Work</button>`);
+  const n = needsOf(d).n, nq = questionsDoc(d).filter((q) => q.open || q.provisional).length;
+  const working = cv.list.some((c) => c.busy);
+  const ptab = (v, label, extra = "") => `<button data-pview="${v}" class="${pview === v ? "on" : ""}">${label}${extra}</button>`;
+  setHTML($("#ptabs"), (SNAP ? "" : ptab("chat", `${working ? `<span class="cdot busy" title="Claude is working in a chat"></span>` : ""}Chat`)) +
+    ptab("status", "Status", n ? ` <span class="cnt" title="needs you">${n}</span>` : "") +
+    ptab("discuss", "Questions", nq ? ` <span class="cnt q" title="open or to ratify">${nq}</span>` : "") +
+    ptab("graph", "Graph") + ptab("logs", "Logs"));
   $("#nowline").hidden = pview === "status";
   setHTML($("#nowline"), "Now: " + nowText(d, cls));
+  $("#nowline").title = $("#nowline").textContent;
   const cur = d.state.current;
   document.title = `${word}${cur ? " · " + cur.task_id : ""} · ${p.name || "loop"}`;
   setFavicon(cls);
@@ -757,10 +882,10 @@ function decisionCard(x, full = false) {
   return `<article class="dc k-${k} ${full ? "full" : ""}"><div class="dc-head"><span class="dc-label">${label}${x.kind !== "gate" ? " " + esc(x.id) : ""}</span>
     <b>${title}</b><span class="spacer"></span><span class="small muted">${meta}</span></div>${body}${acts}</article>`;
 }
-/** The entries of the open questions file, open first, in file order. */
+/** The entries of the open questions file: open and provisional (to ratify) first, in file order. */
 function questionsDoc(d = data) {
-  const qs = d.questions_doc || [];
-  return qs.filter((q) => q.open).concat(qs.filter((q) => !q.open));
+  const qs = d.questions_doc || [], top = (q) => q.open || q.provisional;
+  return qs.filter(top).concat(qs.filter((q) => !top(q)));
 }
 /** A decision ("gate", "question", "provisional") or an entry of the open questions file ("doc"). */
 function findItem(kind, id) {
@@ -769,23 +894,24 @@ function findItem(kind, id) {
 }
 const itemOpen = (kind, x) => !!x && (kind !== "doc" || x.open);
 function qStatus(q) {
-  const cls = q.open ? "open" : /^decided/i.test(q.status) ? "decided" : "";
-  return `<span class="qst ${cls}" title="${esc(q.status)}">${esc(q.open ? "open" : clip(q.status.split(/[ (;]/)[0] || "?", 12))}</span>`;
+  const cls = q.open ? "open" : q.provisional ? "prov" : /^decided/i.test(q.status) ? "decided" : "";
+  return `<span class="qst ${cls}" title="${esc(q.status)}">${esc(q.open ? "open" : q.provisional ? "to ratify" : clip(q.status.split(/[ (;]/)[0] || "?", 12))}</span>`;
 }
 function qItem(q, sel) {
-  return `<button class="qitem k-${q.open ? "blocked-question" : "waiting"} ${q.open ? "" : "closed"} ${sel ? "on" : ""}" data-question="${esc(q.id)}"
+  const k = q.open ? "blocked-question" : q.provisional ? "blocked-owner_action" : "waiting";
+  return `<button class="qitem k-${k} ${q.open || q.provisional ? "" : "closed"} ${sel ? "on" : ""}" data-question="${esc(q.id)}"
     title="${esc(q.status)}${q.blocks ? " · blocks " + esc(q.blocks) : ""}">${qStatus(q)}<span class="qid">${esc(q.id)}</span><span class="qt">${esc(q.title)}</span></button>`;
 }
 function renderQuestions() {
-  const qs = questionsDoc(), open = qs.filter((q) => q.open).length;
-  $("#qhead").textContent = qs.length ? `Questions · ${open} open of ${qs.length}` : "Questions";
+  const qs = questionsDoc(), open = qs.filter((q) => q.open).length, prov = qs.filter((q) => q.provisional).length;
+  $("#qhead").textContent = qs.length ? `Questions · ${open} open${prov ? `, ${prov} to ratify` : ""} of ${qs.length}` : "Questions";
   setHTML($("#questions"), qs.length ? qs.map((q) => qItem(q, false)).join("")
     : `<div class="empty">No entry in ${esc(data.questions_file || "docs/open_questions.md")}.</div>`);
 }
 /** The whole entry of the open questions file, its decision set apart. */
 function questionDetail(q) {
   const body = q.decision ? q.body.slice(0, q.body.lastIndexOf("**Decision.**")).trim() : q.body;
-  return `<article class="dc full k-${q.open ? "blocked-question" : "waiting"}"><div class="dc-head"><span class="dc-label">QUESTION ${esc(q.id)}</span> ${qStatus(q)}
+  return `<article class="dc full k-${q.open ? "blocked-question" : q.provisional ? "blocked-owner_action" : "waiting"}"><div class="dc-head"><span class="dc-label">QUESTION ${esc(q.id)}</span> ${qStatus(q)}
       <b>${esc(q.title)}</b></div>
     <div class="small muted" style="margin:4px 0 10px">${[q.raised_by && "raised by " + esc(q.raised_by), q.blocks && "blocks " + linkIds(esc(q.blocks)),
       q.status && "status: " + esc(q.status)].filter(Boolean).join(" · ")}</div>
@@ -799,12 +925,21 @@ function renderDiscuss() {
   setHTML($("#dlist"), `<button class="back" data-pview="status">← Back to Status</button>` +
     (decs.length ? `<h2>Needs you · ${decs.length}</h2>` + decs.map((d) => `<button class="k-${DKIND[d.kind][1]} ${x === d ? "on" : ""}" data-discuss="${esc(d.kind)}" data-did="${esc(d.id)}">
       <span class="dc-label">${DKIND[d.kind][0]}</span><br><b>${esc(d.id)}</b> ${esc(clip(d.title, 40))}</button>`).join("") : "") +
-    (qs.length ? `<h2>Questions · ${qs.filter((q) => q.open).length} open</h2>` + qs.map((q) => qItem(q, x === q)).join("") : ""));
+    (qs.length ? `<h2>Questions · ${qs.filter((q) => q.open || q.provisional).length} open or to ratify</h2>` + qs.map((q) => qItem(q, x === q)).join("") : ""));
   const entry = discuss && (data.questions_doc || []).find((q) => q.id === discuss.id);
   setHTML($("#ddetail"), !x ? `<div class="empty">${discuss ? esc(discuss.id) + " is not open any more: decided, or the loop moved on." : "Pick a decision or a question."}</div>`
     : discuss.kind === "doc" ? questionDetail(x)
     : decisionCard(x, true) + (discuss.kind === "question" && entry ? `<div style="margin-top:18px">${questionDetail(entry)}</div>` : ""));
   renderChat();
+}
+/** The Questions tab: the item shown last, else the first that needs you, else the first question
+ *  open or to ratify; nothing is started (a discussion starts on request). */
+function openQuestions() {
+  if (discuss || !data) { setPview("discuss"); return; }
+  const d = (data.decisions || [])[0], q = questionsDoc().find((x) => x.open || x.provisional);
+  if (d) openDiscuss(d.kind, d.id, false, false);
+  else if (q) openQuestionEntry(q.id);
+  else setPview("discuss");
 }
 /** A question of the list: its text; its discussion is offered when it is open (started on request). */
 function openQuestionEntry(id) {
@@ -952,15 +1087,271 @@ async function applyDecision(n) {
   pollNow();
 }
 function setPview(v) {
+  if (v === "chat" && SNAP) v = "status";
   pview = v;
   if (v !== "discuss") store("pview", v);
   $("#pv-status").hidden = v !== "status";
-  $("#pv-work").hidden = v !== "work";
+  $("#pv-work").hidden = v !== "graph" && v !== "logs";
   $("#pv-discuss").hidden = v !== "discuss";
+  $("#pv-chat").hidden = v !== "chat";
+  if (v === "graph" || v === "logs") tab = v === "graph" ? "graph" : logTab;
+  if (v === "chat") { renderChats(); convPoll(); }
   if (!data) return;
   renderHeader();
-  if (v === "work") renderView();
+  if (v === "graph" || v === "logs") renderView();
   if (v === "discuss") renderDiscuss();
+}
+
+/* ------------------------------------------------------------ chats of the repository */
+
+const MODEL_NAMES = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku", fable: "Fable" };
+const MODE_NAMES = { acceptEdits: "Accept edits", auto: "Auto", manual: "Ask (refuse)", plan: "Plan" };
+function kTok(n) { return n >= 1e6 ? (n / 1e6).toFixed(n % 1e6 ? 1 : 0) + "M" : n >= 1000 ? Math.round(n / 1000) + "k" : String(n); }
+function convDefaults() {
+  const d = (cv.options || {}).defaults || { model: "opus", effort: "high", mode: "acceptEdits" };
+  return { model: store("conv-model") || d.model, effort: store("conv-effort") || d.effort, mode: store("conv-mode") || d.mode };
+}
+const orchSession = () => (data && data.state.orchestrator_session) || null;
+/** The loop as seen from chat c: "here" (it runs in this chat), "other" (in another session), or "". */
+function loopWhere(c) {
+  const orch = orchSession(), on = data && data.state.loop_active;
+  if (c && c.session && orch === c.session && (c.busy || on)) return "here";
+  if (on && orch && (!c || orch !== c.session)) return "other";
+  return "";
+}
+function convDot(c) {
+  if (c.busy) return "busy";
+  if (c.desktop) return "desk";
+  if (c.error) return "err";
+  return "idle";
+}
+function convLine(c) {
+  if (c.busy) return loopWhere(c) === "here" ? "loop running · now" : "Claude is working";
+  if (c.desktop) return "in the desktop app";
+  return `${c.last_role === "assistant" ? "Claude answered" : c.last_role === "user" ? "you wrote" : "updated"} · ${ago(c.updated)}`;
+}
+function renderConvList() {
+  const orch = orchSession();
+  const item = (c) => `<button class="conv ${c.id === cv.cur ? "on" : ""} ${c.earlier ? "old" : ""}" data-conv="${esc(c.id)}">
+      <span class="cn"><span class="cdot ${convDot(c)}"></span><span class="t">${esc(c.session && c.session === orch ? "Loop · orchestrator" : c.title)}</span></span>
+      <span class="cs">${esc(convLine(c))}</span></button>`;
+  const now = cv.list.filter((c) => !c.earlier), old = cv.list.filter((c) => c.earlier);
+  const disc = cv.discussions.map((x) => `<button class="conv" data-cdisc="${esc(x.kind)}" data-did="${esc(x.item)}">
+      <span class="cn"><span class="cdot ${x.busy ? "busy" : x.error ? "err" : "wait"}"></span><span class="t">${esc(x.item)} · ${esc(x.kind === "doc" ? "question" : x.kind)}</span></span>
+      <span class="cs">discussion · ${x.count} message${x.count === 1 ? "" : "s"}</span></button>`);
+  const html = (now.length || disc.length ? `<div class="convgrp">Active</div>${now.map(item).join("")}${disc.join("")}` : "")
+    + (old.length ? `<div class="convgrp">Earlier</div>${old.map(item).join("")}` : "")
+    + (!cv.list.length && !disc.length ? `<div class="empty small">No chat yet: write below, or press Start loop.</div>` : "");
+  setHTML($("#convlist"), html);
+}
+function meterHTML(label, w, kind) {
+  if (!w) return "";
+  const passed = w.resets && w.resets * 1000 < Date.now();
+  const pct = passed ? 0 : Math.round(w.used * 100);
+  let when = "";
+  if (passed) when = "reset since the last answer";
+  else if (w.resets && kind === "five") when = "resets in " + dur(w.resets - nowS());
+  else if (w.resets) when = "resets " + new Date(w.resets * 1000).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" });
+  return `<div class="meter ${pct >= 90 ? "full" : pct >= 70 ? "warn" : ""}" role="meter" aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100" aria-label="${esc(label)}">
+    <div class="mh"><b>${esc(label)}</b><span class="pct">${pct}%</span></div>
+    <div class="track"><span class="fill" style="width:${Math.min(100, pct)}%"></span></div>
+    <span class="small muted">${esc(when)}</span></div>`;
+}
+function renderUsage() {
+  const p = cv.plan || {};
+  const html = meterHTML("5-hour window", p.five_hour, "five") + meterHTML("Weekly", p.seven_day, "week");
+  setHTML($("#usage"), html ? html + `<div class="small muted" style="margin-top:10px">Your whole plan, as of ${esc(ago(p.at))}.</div>`
+    : `<div class="small muted">No data yet: it comes with Claude's next answer in a chat.</div>`);
+}
+function fillSelect(el, values, names, cur) {
+  const html = values.map((v) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(names[v] || v)}</option>`).join("");
+  if (el.dataset.opts !== values.join()) { el.innerHTML = html; el.dataset.opts = values.join(); }
+  if (cur && el.value !== cur) el.value = cur;
+}
+function renderConv() {
+  const c = cv.conv && cv.conv.id === cv.cur ? cv.conv : null, opts = cv.options;
+  const where = loopWhere(c);
+  $("#mctitle").textContent = c ? (c.session && c.session === orchSession() ? "Loop · orchestrator" : c.title) : "New chat";
+  $("#mcsub").textContent = c ? [`started ${new Date(c.created * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`,
+    c.model_id, c.session && "session " + c.session.slice(0, 8), where === "here" ? "bound as orchestrator" : ""].filter(Boolean).join(" · ")
+    : "Claude Code in this repository, with its settings and hooks";
+  // context of this chat
+  const ctx = $("#mcctx"), used = c && c.context && c.context.used, win = c && c.context && c.context.window;
+  ctx.hidden = !used;
+  if (used) {
+    const pct = win ? Math.round(used / win * 100) : null;
+    ctx.className = "ctx " + (pct >= 90 ? "full" : pct >= 70 ? "warn" : "");
+    ctx.setAttribute("aria-label", `Context window: ${pct ?? "?"} percent used`);
+    setHTML(ctx, `<div class="ch"><b>Context</b><span>${kTok(used)}${win ? " / " + kTok(win) : ""}</span><b>${pct !== null ? pct + "%" : ""}</b></div>
+      <div class="track"><span class="fill" style="width:${pct ?? 0}%"></span></div>`);
+  }
+  const desk = $("#mcdesk");
+  desk.hidden = !c || !c.session;
+  if (c) {
+    desk.lastChild.textContent = c.desktop ? "Take back here" : "Continue in desktop app";
+    desk.title = c.desktop ? "Use this chat here again (close it in the desktop app first)" : "Open this chat's session in the Claude desktop app";
+  }
+  // the conversation
+  const parts = [];
+  let tools = [];
+  const flush = () => { if (tools.length) parts.push(`<div class="mtools">${tools.join("")}</div>`); tools = []; };
+  (c ? c.entries : []).forEach((e) => {
+    if (e.role === "tool") {
+      tools.push(`<span>▸ ${esc(e.text)}${e.result ? ` <span class="${e.failed ? "bad" : "r"}">→ ${esc(e.result)}</span>` : ""}</span>`);
+      return;
+    }
+    flush();
+    if (e.role === "user") parts.push(`<div class="msg-u ${e.queued ? "queued" : ""} ${e.dropped ? "dropped" : ""}">${esc(e.text)}${e.queued ? `<span class="qn">waits: sent when Claude finishes</span>` : ""}</div>`);
+    else if (e.role === "assistant") {
+      parts.push(`<div class="msg-a">${e.text ? md(e.text) : ""}${e.start_loop ? `<div class="startcard"><div class="dc-label">START LOOP</div>
+        <div class="what">${esc(e.start_loop)}</div><div class="apply-row">${loopButton(c, true)}</div></div>` : ""}</div>`);
+    } else if (e.role === "info") parts.push(`<div class="cinfo">${esc(e.text)}</div>`);
+    else if (e.role === "denied") parts.push(`<div class="cdenied">${esc(e.text)} Change Permissions below, or allow them in the repository's .claude/settings.json.</div>`);
+  });
+  flush();
+  if (!c || !c.entries.length) parts.push(`<div class="empty">Ask Claude about the loop, the tasks or the code, or start the loop. This is Claude Code in ${esc((data && data.project.name) || "the repository")}: the repository's settings and hooks apply, as in the desktop app.</div>`);
+  if (c && c.busy) parts.push(`<div class="thinking">${where === "here" ? "The loop is running" : "Claude is working"}</div>`);
+  if (c && c.error) parts.push(`<div class="chat-err">${esc(c.error)}</div>`);
+  const log = $("#mclog"), atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+  if (setHTML(log, parts.join("")) && atEnd) log.scrollTop = log.scrollHeight;
+  // composer
+  const off = !!(c && c.desktop);
+  $("#mcin").disabled = off;
+  $("#mcin").placeholder = off ? "This chat continues in the desktop app: Take back here to write in it again" : c && c.busy ? "Claude is working: a message waits until it finishes" : "Message Claude (Ctrl+Enter sends)";
+  $("#mcsend").disabled = off;
+  $("#mcstop").hidden = !(c && c.busy);
+  const note = $("#mcnote");
+  note.hidden = where !== "here";
+  note.textContent = "Writing here takes the loop back from Claude: it goes on when you start it again.";
+  const s = c ? c.settings : convDefaults();
+  if (opts) {
+    fillSelect($("#mcmodel"), opts.models, MODEL_NAMES, s.model);
+    fillSelect($("#mceffort"), opts.efforts, {}, s.effort);
+    fillSelect($("#mcmode"), opts.modes, MODE_NAMES, s.mode);
+  }
+  $("#mcnext").hidden = !(c && c.busy);
+  setHTML($("#mcloop"), loopButton(c, false));
+}
+/** The Start loop control: a button, or what runs instead. */
+function loopButton(c, inCard) {
+  const where = loopWhere(c);
+  if (where === "here") return inCard ? `<span class="ok-msg">Started</span>` : `<span class="looptag"><span class="cdot busy"></span>Loop running in this chat</span>`;
+  if (where === "other") return inCard ? `<span class="small muted">The loop runs in another session.</span>` : `<span class="looptag other">Loop running in another session</span>`;
+  if (c && c.loop_command === false) return `<span class="small muted">No ${esc((cv.options || {}).loop_command || "/laop-start")} in this repository: install or upgrade laop.</span>`;
+  const dis = (c && (c.busy || c.desktop)) ? "disabled" : "";
+  return `<button type="button" class="${inCard ? "apply" : "startloop"}" data-startloop ${dis} title="Sends ${esc((cv.options || {}).loop_command || "/laop-start")} in this chat: it becomes the loop's orchestrator">${inCard ? "" : `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>`}Start loop</button>`;
+}
+function renderChats() {
+  if (pview !== "chat") return;
+  renderConvList(); renderUsage(); renderConv();
+}
+async function loadConvs() {
+  if (SNAP || !active || active === "overview") return;
+  const rid = active;
+  try {
+    const r = await fetch(`/api/convs?repo=${encodeURIComponent(rid)}`, { cache: "no-store" });
+    if (!r.ok || rid !== active) return;
+    const j = await r.json();
+    const was = cv.list.some((c) => c.busy);
+    Object.assign(cv, { list: j.convs || [], discussions: j.discussions || [], plan: j.plan || {}, options: j.options });
+    if (!cv.cur || !cv.list.some((c) => c.id === cv.cur)) {
+      const saved = store("conv:" + rid);
+      cv.cur = cv.list.some((c) => c.id === saved) ? saved : (cv.list.find((c) => !c.earlier) || {}).id || null;
+      cv.conv = null;
+    }
+    if (data && was !== cv.list.some((c) => c.busy)) renderHeader();
+  } catch (e) { /* the main poll reports a server that does not answer */ }
+}
+async function loadConv() {
+  const id = cv.cur;
+  if (!id) { cv.conv = null; return; }
+  const have = cv.conv && cv.conv.id === id ? cv.conv : null;
+  const meta = cv.list.find((c) => c.id === id);
+  // nothing new: the list says so (same update time, not working)
+  if (have && meta && !have.busy && !meta.busy && meta.updated === have.updated && !have.desktop === !meta.desktop) return;
+  // the last entries may have changed since they were sent (a tool's result, a waiting message
+  // sent): they are fetched again with the new ones
+  const since = have ? Math.max(0, have.entries.length - 8) : 0;
+  const r = await fetch(`/api/conv?id=${encodeURIComponent(id)}&since=${since}`, { cache: "no-store" });
+  if (r.status === 404 && id === cv.cur) { cv.cur = null; cv.conv = null; return; }
+  if (!r.ok || id !== cv.cur) return;
+  absorbConv(await r.json(), !have);
+}
+/** A chat view from the server; ``whole``: it holds every entry, else the entries from its first one on. */
+function absorbConv(v, whole) {
+  const have = !whole && cv.conv && cv.conv.id === v.id ? cv.conv : null;
+  const fresh = v.entries || [];
+  const from = fresh.length ? fresh[0].n : have ? have.entries.length : 0;
+  cv.conv = { ...v, entries: have ? have.entries.filter((e) => e.n < from).concat(fresh) : fresh };
+}
+async function convPoll() {
+  if (cv.polling) return;
+  cv.polling = true;
+  try {
+    while (pview === "chat" && !SNAP && active && active !== "overview") {
+      await loadConvs();
+      await loadConv().catch(() => {});
+      renderChats();
+      const busy = cv.list.some((c) => c.busy);
+      await new Promise((r) => setTimeout(r, busy ? 900 : 2000));
+    }
+  } finally { cv.polling = false; }
+}
+function pickConv(id) {
+  cv.cur = id; cv.conv = null;
+  if (id) store("conv:" + active, id);
+  renderChats();
+  loadConv().then(renderChats).catch(() => {});
+}
+async function newConv() {
+  const res = await postJSON("/api/conv/new", { repo: active, ...convDefaults() });
+  if (!res.ok) { alert(res.body.error || "No new chat."); return null; }
+  cv.list.unshift(res.body);
+  cv.cur = res.body.id; store("conv:" + active, cv.cur);
+  absorbConv(res.body, true);
+  renderChats();
+  $("#mcin").focus();
+  return res.body.id;
+}
+async function convAction(action, extra = {}) {
+  let id = cv.cur;
+  if (!id && (action === "send" || action === "start_loop")) id = await newConv();
+  if (!id) return false;
+  const res = await postJSON("/api/conv/" + action, { id, ...extra });
+  if (!res.ok) { if (cv.conv) { cv.conv.error = res.body.error || "Not done."; renderConv(); } else alert(res.body.error || "Not done."); return false; }
+  if (res.body.entries) absorbConv(res.body, true);
+  await loadConvs();
+  renderChats();
+  convPoll();
+  return true;
+}
+async function sendConv() {
+  const box = $("#mcin"), text = box.value.trim();
+  if (!text) return;
+  box.value = "";
+  if (!(await convAction("send", { text }))) box.value = text;
+}
+async function startLoop() {
+  const c = cv.conv && cv.conv.id === cv.cur ? cv.conv : null;
+  const repoName = (repos.find((r) => r.id === active) || {}).name || "this repository";
+  if (!confirm(`Start the loop of ${repoName} in this chat? Claude runs ${(cv.options || {}).loop_command || "/laop-start"} with permissions "${MODE_NAMES[(c ? c.settings : convDefaults()).mode]}".`)) return;
+  await convAction("start_loop");
+}
+async function convDesktop() {
+  const c = cv.conv;
+  if (!c) return;
+  if (c.desktop) { await convAction("takeback"); return; }
+  if (c.busy) {
+    if (!confirm("Claude is working in this chat. Stop it and continue in the desktop app?")) return;
+    await convAction("stop");
+    for (let i = 0; i < 20 && cv.conv && cv.conv.busy; i++) { await new Promise((r) => setTimeout(r, 300)); await loadConvs(); await loadConv(); }
+  } else if (!confirm("Open this chat in the Claude desktop app? It stops taking messages here until you take it back.")) return;
+  await convAction("desktop");
+}
+async function convSetting(key, value) {
+  store("conv-" + key, value);
+  if (cv.cur) await convAction("settings", { [key]: value });
+  else renderConv();
 }
 
 function evClass(t) {
@@ -991,10 +1382,10 @@ function linkIds(html) {
 
 const NW = 184, NH = 62, PAD = 18;
 /** Layered layout: the level of a task is the length of its longest dependency chain. Levels
- *  run left to right ("h") or top to bottom ("v"); inside a level, tasks are ordered by the mean
- *  position of their dependencies, to reduce crossings. */
+ *  run left to right; inside a level, tasks are ordered by the mean position of their
+ *  dependencies, to reduce crossings. */
 function layout() {
-  const H = orient === "h", GIN = H ? 16 : 18, GLV = H ? 70 : 54;
+  const GIN = 16, GLV = 70;
   const tasks = data.tasks, idx = Object.fromEntries(tasks.map((t, i) => [t.id, i])), lvl = {};
   const visit = (id, path) => {
     if (id in lvl) return lvl[id];
@@ -1024,12 +1415,10 @@ function layout() {
   const rows = Math.max(1, ...cols.map((c) => c.length)), xy = {};
   cols.forEach((c, ci) => c.forEach((id, i) => {
     const along = i + (rows - c.length) / 2;
-    xy[id] = H ? { x: PAD + ci * (NW + GLV), y: PAD + along * (NH + GIN) }
-      : { x: PAD + along * (NW + GIN), y: PAD + ci * (NH + GLV) };
+    xy[id] = { x: PAD + ci * (NW + GLV), y: PAD + along * (NH + GIN) };
   }));
   const n = cols.length;
-  return H ? { xy, w: PAD * 2 + n * NW + (n - 1) * GLV, h: PAD * 2 + rows * NH + (rows - 1) * GIN }
-    : { xy, w: PAD * 2 + rows * NW + (rows - 1) * GIN, h: PAD * 2 + n * NH + (n - 1) * GLV };
+  return { xy, w: PAD * 2 + n * NW + (n - 1) * GLV, h: PAD * 2 + rows * NH + (rows - 1) * GIN };
 }
 function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 function related(id) {
@@ -1059,7 +1448,7 @@ function timeSpan(t, tag = "span") {
 }
 function renderGraph(el) {
   if (!data.tasks.length) { setHTML(el, `<div class="empty">No tasks: harness/tasks.json is missing or empty.</div>`); return; }
-  const H = orient === "h", { xy, w, h } = layout();
+  const { xy, w, h } = layout();
   // Fit: in the app layout and in full screen the whole graph fits the box (width and height);
   // in a narrow window it fits the width and the page scrolls.
   const full = $("#viewcard").classList.contains("full"), pan = panMode();
@@ -1073,14 +1462,8 @@ function renderGraph(el) {
   data.tasks.forEach((t) => (t.depends_on || []).forEach((d) => {
     if (!xy[d]) return;
     const a = xy[d], b = xy[t.id];
-    let path;
-    if (H) {
-      const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
-      path = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 4},${y2}`;
-    } else {
-      const x1 = a.x + NW / 2, y1 = a.y + NH, x2 = b.x + NW / 2, y2 = b.y, my = (y1 + y2) / 2;
-      path = `M${x1},${y1} C${x1},${my} ${x2},${my} ${x2},${y2 - 4}`;
-    }
+    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
+    const path = `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 4},${y2}`;
     const done = byId(d).st.status === "done";
     const on = rel && rel.has(d) && rel.has(t.id);
     edges.push(`<path class="edge ${done ? "done" : "open"} ${on ? "on" : ""}" data-from="${esc(d)}" data-to="${esc(t.id)}" d="${path}" marker-end="url(#arr)"/>`);
@@ -1114,7 +1497,7 @@ function renderGraph(el) {
   setHTML(el, `<div class="graph-box" id="gbox"><svg class="graph ${rel ? "hl" : ""}" width="${Math.round(w * z)}" height="${Math.round(h * z)}" viewBox="0 0 ${w} ${h}">
     <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--wait)"/></marker></defs>
     ${edges.join("")}${nodes.join("")}</svg></div>
-    <div class="small muted" style="margin-top:6px">${H ? "Left to right" : "Top to bottom"} in dependency order; times are work time (agent, checks, review, resolver). Hover a task to trace what it needs and what waits on it; click for details.${pan ? " Wheel to zoom, drag to move." : ""}</div>`);
+    <div class="small muted" style="margin-top:6px">Left to right in dependency order; times are work time (agent, checks, review, resolver). Hover a task to trace what it needs and what waits on it; click for details.${pan ? " Wheel to zoom, drag to move." : ""}</div>`);
 }
 
 /* ------------------------------------------------------------ other views */
@@ -1158,12 +1541,12 @@ function panMode() {
     (document.body.classList.contains("app") && matchMedia("(min-width: 900px) and (min-height: 600px)").matches);
 }
 function renderView() {
-  if (pview !== "work") return;
+  if (pview !== "graph" && pview !== "logs") return;
   $("#view").className = "v-" + tab;
-  setHTML($("#tabs"), TABS.map(([k, label]) => `<button data-tab="${k}" class="${k === tab ? "active" : ""}">${label}</button>`).join("") +
-    (tab === "graph" ? `<span class="spacer"></span><span class="zoom"><button data-orient title="Lay the graph out ${orient === "h" ? "top to bottom" : "left to right"}">${orient === "h" ? "↕ Vertical" : "↔ Horizontal"}</button>
+  setHTML($("#tabs"), tab !== "graph" ? TABS.map(([k, label]) => `<button data-tab="${k}" class="${k === tab ? "active" : ""}">${label}</button>`).join("")
+    : `<span class="spacer"></span><span class="zoom">
       <button data-zoom="-">−</button> <button data-zoom="fit" class="${zoomMode === "fit" ? "active" : ""}">Fit</button> <button data-zoom="+">+</button>
-      <button data-full>${$("#viewcard").classList.contains("full") ? "Exit full screen" : "Full screen"}</button></span>` : ""));
+      <button data-full>${$("#viewcard").classList.contains("full") ? "Exit full screen" : "Full screen"}</button></span>`);
   const el = $("#view");
   const keep = $("#gbox") ? [$("#gbox").scrollLeft, $("#gbox").scrollTop] : null;
   ({ graph: renderGraph, tasks: renderTable, log: renderLog, commits: renderCommits, files: renderFiles }[tab] || renderGraph)(el);
@@ -1277,7 +1660,7 @@ function barHTML(d) {
       `<span class="k-${k}"><i style="background:var(--c)"></i>${esc(KINDS[k])} <b>${counts[k]}</b></span>`).join(""),
   };
 }
-/** One line on what a loop does now (the overview cards, the head of the Work view). */
+/** One line on what a loop does now (the overview cards, the head of the other views). */
 function nowText(r, cls) {
   const cur = r.state.current;
   if (cur) {
@@ -1297,6 +1680,7 @@ function overviewCard(r) {
   const items = [];
   if (r.stops.emergency) items.push(["blocked-harness", "<b>Emergency stop</b>: every tool call is blocked."]);
   else if (r.stops.hard) items.push(["blocked-question", "<b>Stop requested</b>: the task in flight hands off, then the loop stops."]);
+  if (r.stop_at) items.push(["waiting", `<b>⏱ ${STOP_NAMES[r.stop_at.kind]} scheduled</b> at ${esc(whenText(r.stop_at.at))}`]);
   if (r.state.halted) items.push(["blocked-harness", `<b>Halted:</b> ${esc(clip(r.state.halted, 220))}`]);
   r.tasks.filter((t) => kindOf(t, r) === "gate-open").forEach((t) => items.push(["gate-open", `<b>◆ ${esc(t.id)} awaits you</b> · ${esc(clip(t.title, 90))}${t.holds_up.length ? ` · holds ${t.holds_up.length}` : ""}`]));
   if (nd.prov) items.push(["blocked-owner_action", `<b>${nd.prov} provisional decision(s)</b> to ratify or override`]);
@@ -1361,6 +1745,7 @@ function renderAll() {
   if (!data) return;
   renderHeader(); renderProgress(); renderNow(); renderAttention(); renderQuestions(); renderEvents(); renderView(); renderDrawer();
   if (pview === "discuss") renderDiscuss();
+  if (pview === "chat") { renderChats(); convPoll(); }  // convPoll runs once at a time
 }
 function update(d) {
   const prev = data;
@@ -1383,6 +1768,7 @@ function switchTo(id) {
   $("#drawer").hidden = true;
   if ($("#viewcard").classList.contains("full")) $("#viewcard").classList.remove("full");
   discuss = null;
+  Object.assign(cv, { list: [], discussions: [], cur: null, conv: null });
   setPview(pview === "discuss" ? "status" : pview);
   showActive();
   if (active !== "overview") { setHTML($("#now"), `<h2>Now</h2><div class="muted">Loading…</div>`); pollNow(); }
@@ -1418,6 +1804,7 @@ async function pollOnce() {
     if (sn.status === 200) { etag = sn.etag; update(sn.body); }
     else if (sn.status === 404) { switchTo("overview"); }
     else if (sn.status !== 304) throw new Error("HTTP " + sn.status);
+    if (pview !== "chat") loadConvs();  // the Chat tab shows when Claude works in one (the chat view polls its own)
   }
 }
 let polling = false;
@@ -1454,16 +1841,80 @@ function openAdd() {
     $("#cands").innerHTML = c.length ? `<div class="small muted">Found nearby:</div>${c.map((p) => `<button type="button" data-addpath="${esc(p)}">${esc(p)}</button>`).join("")}` : "";
   }).catch(() => { $("#cands").innerHTML = ""; });
 }
-/** Soft stop / Stop / Emergency stop / Clear stops for one repository (id) or every one ("all"). */
+/** Soft stop / Stop / Emergency stop / Schedule / Clear stops for one repository (id) or every one ("all"). */
 const STOP_KINDS = ["soft", "hard", "emergency"];
+const STOP_NAMES = { soft: "Soft stop", hard: "Stop", emergency: "Emergency stop" };
 function stopButtons(id, on, suffix, any = STOP_KINDS.some((k) => on[k])) {
   const b = (kind, label, title) => `<button class="${kind} ${on[kind] ? "on" : ""}" data-stop="${kind}" data-stopid="${esc(id)}" ${on[kind] ? "disabled" : ""}
       title="${title}">${label}${suffix}</button>`;
+  const at = schedOf(id);
   return b("soft", "Soft stop", "Create AGENT_SOFT_STOP: the agent at work finishes, then the loop stops and later resumes from there")
     + b("hard", "Stop", "Create AGENT_STOP: the task agent commits its work and writes a handoff note, then the loop stops")
     + b("emergency", "Emergency stop", "Create AGENT_EMERGENCY_STOP: every tool call is blocked at once (force kill)")
+    + `<button class="sched ${at ? "on" + (at.kind === "emergency" ? " emergency-at" : "") : ""}" data-sched="${esc(id)}"
+      title="${at ? "Scheduled: change or cancel it" : "Schedule a stop at a date and time"}">⏱ ${at ? `${STOP_NAMES[at.kind]} at ${whenText(at.at)}` : "Schedule…"}</button>`
     + `<button data-stop="clear" data-stopid="${esc(id)}" ${any ? "" : "disabled"}
       title="Remove AGENT_SOFT_STOP, AGENT_STOP and AGENT_EMERGENCY_STOP">Clear stops${suffix}</button>`;
+}
+/** The stop scheduled in a repository, or in every one when they all have the same ("all"). */
+function schedOf(id) {
+  if (id !== "all") return (active === id && data ? data.stop_at : (repos.find((r) => r.id === id) || {}).stop_at) || null;
+  const s = repos.filter((r) => !r.missing).map((r) => r.stop_at || null);
+  return s.length && s[0] && s.every((x) => x && x.kind === s[0].kind && x.at === s[0].at) ? s[0] : null;
+}
+/** A time to come, short: "18:30", "tomorrow 09:00", "Mon 3 Nov 18:30". */
+function whenText(t) {
+  const d = new Date(t * 1000), now = new Date(), tom = new Date(now);
+  tom.setDate(now.getDate() + 1);
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === now.toDateString()) return hm;
+  if (d.toDateString() === tom.toDateString()) return "tomorrow " + hm;
+  return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" }) + " " + hm;
+}
+/** Schedule, change or cancel a stop at a date and time: the server creates the stop file then. */
+function openSchedule(id) {
+  const r = repos.find((x) => x.id === id);
+  const who = id === "all" ? "every watched repository" : r ? r.name : (data && data.project.name) || "this repository";
+  const cur = schedOf(id), pad = (n) => String(n).padStart(2, "0");
+  const local = (t) => { const d = new Date(t * 1000); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const kind = cur ? cur.kind : "soft";
+  const opt = (k, what) => `<label class="sopt"><input type="radio" name="skind" value="${k}" ${k === kind ? "checked" : ""}>
+    <span><b>${STOP_NAMES[k]}</b><br><span class="small muted">${what}</span></span></label>`;
+  const m = $("#modal");
+  m.hidden = false;
+  m.innerHTML = `<div class="inner confirm ${kind === "emergency" ? "emergency" : ""}" role="dialog" aria-modal="true" aria-label="Schedule a stop">
+    <div class="mh"><b>Schedule a stop</b></div>
+    <div class="cb">
+      <div>At the time you give, this viewer creates the stop file in <b>${esc(who)}</b>. It must be running then; a stop missed while it was closed is created when it starts again.</div>
+      <div class="sopts">${opt("soft", "The agent at work finishes, then the loop stops; it resumes from there.")}
+        ${opt("hard", "The task agent commits its work in progress, writes a handoff note and ends.")}
+        ${opt("emergency", "Every tool call is blocked at once: work in progress is lost.")}</div>
+      <div class="swhen"><label>At <input type="datetime-local" id="schedat" value="${local(cur ? cur.at : Math.ceil(nowS() / 1800) * 1800 + 3600)}"></label>
+        <button type="button" data-plus="30">+30 min</button><button type="button" data-plus="60">+1 h</button><button type="button" data-plus="120">+2 h</button><button type="button" data-plus="240">+4 h</button></div>
+      <div class="err" id="scherr"></div>
+    </div>
+    <div class="cf">${cur ? `<button type="button" data-ans="cancel">Cancel the scheduled stop</button><span class="spacer"></span>` : ""}
+      <button type="button" data-ans="no">Close</button><button type="button" class="go" data-ans="yes">${cur ? "Change" : "Schedule"}</button></div></div>`;
+  const inner = m.querySelector(".inner");
+  m.querySelectorAll('input[name="skind"]').forEach((x) => x.addEventListener("change", () => inner.classList.toggle("emergency", x.value === "emergency" && x.checked)));
+  m.querySelectorAll("[data-plus]").forEach((b) => b.addEventListener("click", () => { $("#schedat").value = local(nowS() + 60 * parseInt(b.dataset.plus, 10)); }));
+  m.querySelectorAll("[data-ans]").forEach((btn) => btn.addEventListener("click", async (ev) => {
+    ev.stopPropagation();
+    const ans = btn.dataset.ans;
+    if (ans === "no") { m.hidden = true; return; }
+    let body = { id, kind: null };
+    if (ans === "yes") {
+      const at = new Date($("#schedat").value).getTime() / 1000;
+      if (!at || at <= nowS()) { $("#scherr").textContent = "Give a time in the future."; return; }
+      body = { id, kind: m.querySelector('input[name="skind"]:checked').value, at };
+    }
+    const res = await postJSON("/api/stop/schedule", body);
+    if (!res.ok) { $("#scherr").textContent = res.body.error || "Not done: server error."; return; }
+    m.hidden = true;
+    ovEtag = null; etag = null;
+    pollNow();
+  }));
+  $("#schedat").focus();
 }
 /** The confirmation of a stop in the modal: resolves true on the confirm button only. */
 function confirmStop(what, who) {
@@ -1540,11 +1991,15 @@ function tick() {
 /* ------------------------------------------------------------ events */
 
 document.addEventListener("click", (ev) => {
-  const el = ev.target.closest("[data-stop],[data-rclose],[data-rtab],[data-add],[data-addpath],[data-copy],[data-task],[data-file],[data-tab],[data-tfilter],[data-zoom],[data-orient],[data-full],[data-close],[data-pview],[data-discuss],[data-question],[data-apply]");
+  const el = ev.target.closest("[data-stop],[data-sched],[data-rclose],[data-rtab],[data-add],[data-addpath],[data-copy],[data-task],[data-file],[data-tab],[data-tfilter],[data-zoom],[data-full],[data-close],[data-pview],[data-discuss],[data-question],[data-apply],[data-conv],[data-cdisc],[data-startloop]");
   if (!el) { if (ev.target.id === "modal") $("#modal").hidden = true; return; }
   const ds = el.dataset;
+  if (ds.conv) { pickConv(ds.conv); return; }
+  if (ds.cdisc) { openDiscuss(ds.cdisc, ds.did); return; }
+  if (ds.startloop !== undefined) { if (!el.disabled) startLoop(); return; }
   if (ds.stop) { if (!el.disabled) setStop(ds.stopid, ds.stop); return; }
-  if (ds.pview) { setPview(ds.pview); return; }
+  if (ds.sched !== undefined) { openSchedule(ds.sched); return; }
+  if (ds.pview) { if (ds.pview === "discuss") openQuestions(); else setPview(ds.pview); return; }
   if (ds.discuss) { openDiscuss(ds.discuss, ds.did); return; }
   if (ds.question) { openQuestionEntry(ds.question); return; }
   if (ds.apply !== undefined) { if (!el.disabled) applyDecision(parseInt(ds.apply, 10)); return; }
@@ -1558,14 +2013,14 @@ document.addEventListener("click", (ev) => {
     else prompt("Copy:", ds.copy);
   } else if (ds.file) openFile(ds.file);
   else if (ds.task) { selected = ds.task; renderDrawer(); if (tab === "graph") renderView(); }
-  else if (ds.tab) { tab = ds.tab; store("tab", tab); renderView(); }
+  else if (ds.tab) { tab = logTab = ds.tab; store("tab", tab); renderView(); }
   else if (ds.tfilter) { tfilter = ds.tfilter; renderView(); }
   else if (ds.close === "drawer") { selected = null; renderDrawer(); if (tab === "graph") renderView(); }
   else if (ds.close === "modal") $("#modal").hidden = true;
   else if (ds.zoom) {
     zoomMode = ds.zoom === "fit" ? "fit" : String(Math.min(2.5, Math.max(0.25, shownZoom * (ds.zoom === "+" ? 1.2 : 1 / 1.2))));
     store("zoom", zoomMode); renderView();
-  } else if (ds.orient !== undefined) { orient = orient === "h" ? "v" : "h"; store("orient", orient); renderView(); }
+  }
   else if (ds.full !== undefined) { $("#viewcard").classList.toggle("full"); renderView(); }
 });
 document.addEventListener("mouseover", (ev) => {
@@ -1592,10 +2047,19 @@ window.addEventListener("hashchange", () => {
 document.addEventListener("submit", (ev) => {
   if (ev.target.id === "addform") { ev.preventDefault(); addRepo($("#addpath").value); }
   if (ev.target.id === "chatform") { ev.preventDefault(); sendChat(); }
+  if (ev.target.id === "mcform") { ev.preventDefault(); sendConv(); }
 });
 $("#chatin").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); sendChat(); }
 });
+$("#mcin").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); sendConv(); }
+});
+$("#convnew").addEventListener("click", () => newConv());
+$("#mcstop").addEventListener("click", () => convAction("stop"));
+$("#mcdesk").addEventListener("click", () => convDesktop());
+[["#mcmodel", "model"], ["#mceffort", "effort"], ["#mcmode", "mode"]].forEach(([sel, key]) =>
+  $(sel).addEventListener("change", (ev) => convSetting(key, ev.target.value)));
 /* the handle above the message box: dragging it up makes the box taller, the discussion shorter */
 function setChatHeight(h) {
   const box = $("#chatin"), card = box.closest(".chat");

@@ -132,8 +132,10 @@ def main(argv: list[str]) -> int:
             print(why)
             return 2
 
-    handler = type("BoundHandler", (viewer.Handler,), {"registry": registry})
+    handler = type("BoundHandler", (viewer.Handler,), {"registry": registry,
+                                                       "convs": viewer.Convs(registry.config.parent / "chats")})
     server = bind(handler)
+    registry.start_scheduler()
     threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True).start()
 
     url = f"http://127.0.0.1:{server.server_address[1]}/"

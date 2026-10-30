@@ -133,6 +133,30 @@ class ViewerTest(unittest.TestCase):
         self.assertTrue(again.remove(rid))
         self.assertEqual(self.viewer.Registry(reg.config).listing(), [])
 
+    def test_scheduled_stop_is_kept_and_created_when_due(self):
+        reg = self.registry()
+        rid, _ = reg.add(str(self.repo.root))
+        repo, root = reg.get(rid), self.repo.root
+        self.addCleanup(lambda: (root / "AGENT_STOP").unlink(missing_ok=True))
+        now = self.viewer.time.time()
+        self.assertIn("future", reg.schedule_stop([repo], "hard", now - 10))
+        self.assertIn("kind", reg.schedule_stop([repo], "other", now + 60))
+        self.assertIsNone(repo.stop_at)
+        tag = repo.etag()
+        self.assertEqual(reg.schedule_stop([repo], "hard", now + 3600), "")
+        self.assertNotEqual(repo.etag(), tag)  # the page sees it at its next poll
+        self.assertEqual(repo.snapshot()["stop_at"], {"kind": "hard", "at": now + 3600})
+        self.assertEqual(self.viewer.Registry(reg.config).get(rid).stop_at, {"kind": "hard", "at": now + 3600})
+        self.assertEqual(reg.fire_due(now), [])
+        self.assertFalse((root / "AGENT_STOP").exists())
+        self.assertEqual(reg.fire_due(now + 3600), [])
+        self.assertIn("scheduled for", (root / "AGENT_STOP").read_text(encoding="utf-8"))
+        self.assertIsNone(repo.stop_at)
+        self.assertIsNone(self.viewer.Registry(reg.config).get(rid).stop_at)  # done: forgotten
+        reg.schedule_stop([repo], "soft", now + 60)
+        self.assertEqual(reg.schedule_stop([repo], None, None), "")  # cancelled
+        self.assertIsNone(self.viewer.Registry(reg.config).get(rid).stop_at)
+
     def test_http_server(self):
         reg = self.registry()
         rid, _ = reg.add(str(self.repo.root))
@@ -187,6 +211,20 @@ class ViewerTest(unittest.TestCase):
             self.assertEqual(stop({"id": "unknown", "kind": "hard"}), 404)
             self.assertEqual(stop({"id": "all", "kind": None}), 200)
             self.assertFalse((root / "AGENT_STOP").exists() or (root / "AGENT_SOFT_STOP").exists())
+
+            def schedule(body, origin=base) -> int:
+                return status(urllib.request.Request(base + "/api/stop/schedule", data=json.dumps(body).encode(),
+                                                     method="POST", headers={"Content-Type": "application/json",
+                                                                             "Origin": origin}))
+            at = self.viewer.time.time() + 600
+            self.assertEqual(schedule({"id": rid, "kind": "soft", "at": at}, "https://evil.example"), 403)
+            self.assertEqual(schedule({"id": rid, "kind": "soft", "at": at - 1200}), 400)
+            self.assertEqual(schedule({"id": "unknown", "kind": "soft", "at": at}), 404)
+            self.assertEqual(schedule({"id": "all", "kind": "soft", "at": at}), 200)
+            with urllib.request.urlopen(f"{base}/api/snapshot?repo={rid}") as r:
+                self.assertEqual(json.loads(r.read())["stop_at"], {"kind": "soft", "at": at})
+            self.assertEqual(schedule({"id": rid, "kind": None}), 200)
+            self.assertIsNone(reg.get(rid).stop_at)
             own = urllib.request.Request(base + "/api/repos/remove", data=json.dumps({"id": rid}).encode(),
                                          method="POST", headers={"Content-Type": "application/json", "Origin": base})
             self.assertEqual(status(own), 200)
@@ -262,6 +300,12 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual((q1["raised_by"], q1["blocks"], q1["decision"]), ("planner", "T1", "(a), owner."))
         self.assertTrue(q1["body"].startswith("**Question.**"))
         self.assertTrue(q2["open"])
+        self.assertFalse(q1["provisional"] or q2["provisional"])
+        prov, = self.viewer.parse_questions("## Q3: Cache\n\n- Status: provisional (resolver, 2026-10-12)\n\nText.\n")
+        self.assertEqual((prov["open"], prov["provisional"]), (False, True))  # to ratify
+        ratified, = self.viewer.parse_questions("## Q4: X\n\n- Status: decided (ratified by the owner, 2026-10-16; "
+                                                "provisional decision of the resolver)\n")
+        self.assertFalse(ratified["provisional"])
         self.assertNotIn("not a question", q2["body"])
         docs = self.repo.root / "docs"
         docs.mkdir(exist_ok=True)
@@ -271,6 +315,11 @@ class DecisionsTest(unittest.TestCase):
         v = self.viewer.Repo(self.repo.root)
         self.assertIsNone(v.decision("doc", "Q1"))  # decided: nothing to discuss
         self.assertEqual(v.decision("doc", "Q2")["file"], "docs/open_questions.md")
+        (docs / "open_questions.md").write_text(text + "\n## Q0: Kept\n\n- Status: decided\n", encoding="utf-8")
+        self.addCleanup((docs / "open_questions.md").write_text, text, encoding="utf-8")
+        by_id = {q["id"]: q for q in self.viewer.Repo(self.repo.root).snapshot()["questions_doc"]}
+        self.assertTrue(by_id["Q0"]["provisional"])  # its provisional decision is open in state.json
+        self.assertFalse(by_id["Q1"]["provisional"])
 
     def test_write_decision_changes_only_that_entry(self):
         tmp = Path(tempfile.mkdtemp(prefix="laop_viewer_q_"))
@@ -384,6 +433,163 @@ class DecisionsTest(unittest.TestCase):
         self.assertEqual(second["args"][second["args"].index("--resume") + 1], "s-1")
         self.assertEqual(second["prompt"], "And the API pages?")
         self.assertIsNone(chats.start(self.v, "rid", "question", "nope", False)[0])
+
+
+FAKE_CLAUDE_CODE = r'''
+import json, sys, time
+log = sys.argv[1]
+args, prompt = sys.argv[2:], sys.stdin.read()
+with open(log, "a", encoding="utf-8") as f:
+    f.write(json.dumps({"args": args, "prompt": prompt}) + "\n")
+if "slow" in prompt:
+    time.sleep(1.0)
+out = lambda d: print(json.dumps(d), flush=True)
+out({"type": "system", "subtype": "init", "session_id": "s-9", "model": "claude-opus-test"})
+out({"type": "assistant", "parent_tool_use_id": None, "message": {"usage": {"input_tokens": 10,
+     "cache_read_input_tokens": 50000, "cache_creation_input_tokens": 990}, "content": [
+     {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "python harness/step_next.py"}}]}})
+out({"type": "assistant", "parent_tool_use_id": "t1", "message": {"content": [{"type": "text", "text": "inside a subagent"}]}})
+out({"type": "user", "parent_tool_use_id": None, "message": {"content": [{"type": "tool_result", "tool_use_id": "t1",
+     "content": "Task T1 ready\nNEXT ACTION: spawn builder with harness/prompts/T1.md"}]}})
+out({"type": "assistant", "parent_tool_use_id": None, "message": {"content": [{"type": "text", "text":
+     "Five tasks are ready.\nSTART LOOP: run the ready tasks of M2"}]}})
+out({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "unifiedWindows": {
+     "five_hour": {"utilization": 0.38, "resetsAt": 4102444800}, "seven_day": {"utilization": 0.71, "resetsAt": 4102444800}}}})
+out({"type": "result", "is_error": False, "result": "ok", "modelUsage": {"claude-opus-test": {"contextWindow": 200000}},
+     "permission_denials": [{"tool_name": "Write", "tool_input": {}}]})
+'''
+
+
+class ConversationTest(unittest.TestCase):
+    """Chats of a repository: Claude Code with the project's settings, the loop started from the page."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo = Repo()
+        cls.repo.tasks(TASKS)
+        cls.viewer = load_viewer(cls.repo)
+        cls.v = cls.viewer.Repo(cls.repo.root)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.repo.close()
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="laop_viewer_conv_"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        fake, self.log = self.tmp / "fake_claude.py", self.tmp / "calls.jsonl"
+        fake.write_text(FAKE_CLAUDE_CODE, encoding="utf-8")
+        old = self.viewer.claude_command
+        self.viewer.claude_command = lambda: [sys.executable, str(fake), str(self.log)]
+        self.addCleanup(setattr, self.viewer, "claude_command", old)
+
+    def wait(self, conv):
+        for _ in range(300):
+            if not conv.busy:
+                return
+            threading.Event().wait(0.05)
+        self.fail("the fake claude did not finish")
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text(encoding="utf-8").splitlines()]
+
+    def test_a_turn_runs_claude_code_with_the_project_settings(self):
+        convs = self.viewer.Convs(self.tmp / "chats")
+        conv, why = convs.new(self.v, "rid", {})
+        self.assertEqual(why, "")
+        self.assertEqual(conv.send("Where are we?"), "")
+        self.wait(conv)
+        self.assertEqual(conv.error, "")
+        roles = [e["role"] for e in conv.entries]
+        self.assertEqual(roles, ["user", "tool", "assistant", "denied"])  # nothing from inside the subagent
+        tool = conv.entries[1]
+        self.assertEqual(tool["text"], "Bash python harness/step_next.py")
+        self.assertEqual(tool["result"], "NEXT ACTION: spawn builder with harness/prompts/T1.md")
+        self.assertEqual(conv.entries[2]["text"], "Five tasks are ready.")
+        self.assertEqual(conv.entries[2]["start_loop"], "run the ready tasks of M2")
+        self.assertIn("Write", conv.entries[3]["text"])
+        self.assertEqual(conv.context, {"used": 51000, "window": 200000})
+        self.assertEqual((conv.session, conv.model_id, conv.title), ("s-9", "claude-opus-test", "Where are we?"))
+        plan = convs.plan.view()
+        self.assertEqual((plan["five_hour"]["used"], plan["seven_day"]["used"]), (0.38, 0.71))
+        args = self.calls()[0]["args"]
+        self.assertIn("--strict-mcp-config", args)
+        self.assertNotIn("--setting-sources", args)  # the project's settings and hooks apply
+        self.assertNotIn("--tools", args)
+        self.assertEqual([args[args.index(k) + 1] for k in ("--model", "--effort", "--permission-mode")],
+                         ["opus", "high", "acceptEdits"])
+        self.assertNotIn("--resume", args)
+        # the next turn resumes the session with the settings changed meanwhile
+        self.assertEqual(conv.configure({"model": "sonnet", "mode": "manual"}), "")
+        self.assertIn("must be one of", conv.configure({"effort": "huge"}))
+        self.assertEqual(conv.send("And now?"), "")
+        self.wait(conv)
+        args = self.calls()[1]["args"]
+        self.assertEqual([args[args.index(k) + 1] for k in ("--resume", "--model", "--permission-mode")],
+                         ["s-9", "sonnet", "default"])
+        # kept across a restart of the viewer
+        again = self.viewer.Convs(self.tmp / "chats").get(conv.id)
+        self.assertTrue(again.earlier)
+        self.assertEqual((again.session, again.settings["model"], len(again.entries)),
+                         ("s-9", "sonnet", len(conv.entries)))
+        self.assertEqual(self.viewer.Convs(self.tmp / "chats").plan.view()["seven_day"]["used"], 0.71)
+
+    def test_messages_sent_while_claude_works_wait(self):
+        conv, _ = self.viewer.Convs(None).new(self.v, "rid", {})
+        self.assertEqual(conv.send("slow one"), "")
+        self.assertEqual(conv.send("second"), "")
+        self.assertEqual(conv.send("third"), "")
+        self.assertTrue(conv.entries[-1].get("queued"))
+        self.wait(conv)
+        self.assertEqual([c["prompt"] for c in self.calls()], ["slow one", "second\n\nthird"])
+        self.assertFalse(any(e.get("queued") for e in conv.entries))
+
+    def test_http_chat_and_start_loop(self):
+        reg = self.viewer.Registry(self.tmp / "viewer.json")
+        rid, _ = reg.add(str(self.repo.root))
+        handler = type("H", (self.viewer.Handler,), {"registry": reg, "convs": self.viewer.Convs(self.tmp / "chats")})
+        server = self.viewer.http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def post(path, body):
+            req = urllib.request.Request(base + path, json.dumps(body).encode(), {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as exc:
+                with exc:
+                    return exc.code, json.loads(exc.read() or b"{}")
+
+        code, conv = post("/api/conv/new", {"repo": rid, "model": "haiku"})
+        self.assertEqual((code, conv["settings"]["model"]), (200, "haiku"))
+        self.assertEqual(post("/api/conv/new", {"repo": rid, "model": "gpt"})[0], 400)
+        cmd_file = self.repo.root / ".claude" / "commands" / "laop-start.md"
+        saved = cmd_file.read_bytes() if cmd_file.exists() else b"loop"
+        cmd_file.unlink(missing_ok=True)
+        code, body = post("/api/conv/start_loop", {"id": conv["id"], "text": "rm -rf ."})
+        self.assertEqual(code, 409)
+        self.assertIn("laop-start.md", body["error"])
+        cmd_file.parent.mkdir(parents=True, exist_ok=True)
+        cmd_file.write_bytes(saved)
+        self.assertEqual(post("/api/conv/start_loop", {"id": conv["id"], "text": "rm -rf ."})[0], 200)
+        c = handler.convs.get(conv["id"])
+        self.wait(c)
+        self.assertEqual(self.calls()[0]["prompt"], "/laop-start")  # the server's command, never the page's text
+        self.assertEqual(c.title, "Loop")
+        with urllib.request.urlopen(f"{base}/api/convs?repo={rid}") as r:
+            listing = json.loads(r.read())
+        self.assertEqual([x["id"] for x in listing["convs"]], [conv["id"]])
+        self.assertEqual(listing["plan"]["five_hour"]["used"], 0.38)
+        with urllib.request.urlopen(f"{base}/api/conv?id={conv['id']}&since=1") as r:
+            view = json.loads(r.read())
+        self.assertEqual(view["entries"][0]["n"], 1)
+        self.assertTrue(view["loop_command"])
+        self.assertEqual(post("/api/conv/send", {"id": "nope", "text": "x"})[0], 404)
+        self.assertEqual(post("/api/conv/remove", {"id": conv["id"]})[0], 200)
+        self.assertIsNone(handler.convs.get(conv["id"]))
 
 
 if __name__ == "__main__":

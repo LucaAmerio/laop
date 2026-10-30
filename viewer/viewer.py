@@ -22,7 +22,8 @@ the commits, and the time spent on each task.
 
 Read-only except for the stop files: the only files of a repository the viewer writes are
 AGENT_SOFT_STOP, AGENT_STOP and AGENT_EMERGENCY_STOP at its root (the "Soft stop", "Stop",
-"Emergency stop" and "Clear stops" buttons, per repository or for all of them from the overview). Otherwise it writes only its list of repositories
+"Emergency stop" and "Clear stops" buttons, per repository or for all of them from the overview,
+and a stop scheduled at a date and time, which this server creates when it comes). Otherwise it writes only its list of repositories
 and the snapshot you ask for, and takes no lock (state.json is written atomically, so a read never
 sees half a file). Every other owner action is shown as the ``owner_tools.py`` command to copy.
 
@@ -57,6 +58,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import uuid
 import webbrowser
 from fnmatch import fnmatch
 from pathlib import Path
@@ -86,6 +88,9 @@ LOG_TAIL_LINES = 400
 COMMITS = 60
 #: Stop files the page may create or remove at a repository root.
 STOP_FILES = {"soft": "AGENT_SOFT_STOP", "hard": "AGENT_STOP", "emergency": "AGENT_EMERGENCY_STOP"}
+#: How often the server looks for a scheduled stop that is due (seconds), and how far ahead one may be.
+SCHEDULE_POLL = 5
+SCHEDULE_MAX_AHEAD = 366 * 86400
 
 #: Files the page may open, relative to the repository (open questions and principles are added
 #: from project.json).
@@ -105,6 +110,9 @@ class Repo:
         self._times_cache: tuple[tuple, dict] = ((), {})
         self._snap_cache: tuple[str, dict | None] = ("", None)
         self._snap_lock = threading.Lock()
+        #: A stop scheduled by the owner, {"kind": <STOP_FILES key>, "at": <epoch seconds>}: kept in
+        #: the list of repositories (Registry), created by the server when it is due.
+        self.stop_at: dict | None = None
 
     # ------------------------------------------------------------------ helpers
 
@@ -188,6 +196,7 @@ class Repo:
                 parts.append(f"{p.name}:{s.st_mtime_ns}:{s.st_size}")
             except OSError:
                 parts.append(f"{p.name}:-")
+        parts.append(json.dumps(self.stop_at, sort_keys=True))
         return hashlib.sha256("|".join(parts).encode()).hexdigest()[:20]
 
     def commits(self, owned: dict[str, str], owner: set[str]) -> list[dict]:
@@ -251,16 +260,18 @@ class Repo:
                          if q["id"] == item_id and q["open"]), None)
         return next((d for d in snap["decisions"] if d["kind"] == kind and d["id"] == item_id), None)
 
-    def set_stop(self, kind: str | None) -> None:
+    def set_stop(self, kind: str | None, scheduled: float | None = None) -> None:
         """Create AGENT_SOFT_STOP ("soft"), AGENT_STOP ("hard") or AGENT_EMERGENCY_STOP
         ("emergency") at the repository root, or remove all three (None): the only files of a
-        repository the viewer writes."""
+        repository the viewer writes. ``scheduled``: the time the owner scheduled it for."""
         if kind is None:
             for name in STOP_FILES.values():
                 (self.root / name).unlink(missing_ok=True)
             return
         stamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        (self.root / STOP_FILES[kind]).write_text(f"Created by laop_view at {stamp}.\n", encoding="utf-8")
+        why = (f", scheduled for {dt.datetime.fromtimestamp(scheduled):%Y-%m-%d %H:%M}"
+               if scheduled is not None else "")
+        (self.root / STOP_FILES[kind]).write_text(f"Created by laop_view at {stamp}{why}.\n", encoding="utf-8")
 
     # ------------------------------------------------------------------ snapshot
 
@@ -316,6 +327,7 @@ class Repo:
                 current["spawn"] = {k: v for k, v in current["spawn"].items() if k != "token_line"}
         files = self.listed_files()
         decisions = decision_items(tasks, state, self.read_resolution)
+        to_ratify = {d["id"] for d in decisions if d["kind"] == "provisional"}
         return {
             "generated": time.time(),
             "repo": str(self.root),
@@ -343,6 +355,7 @@ class Repo:
                 "empty_runs": state.get("empty_runs", 0),
                 "resolutions_this_run": state.get("resolutions_this_run", 0),
                 "bound": bool(state.get("orchestrator_session")),
+                "orchestrator_session": state.get("orchestrator_session") or None,
                 "last_task": state.get("last_task"),
                 "provisional": state.get("provisional", {}),
                 "questions": state.get("questions", {}),
@@ -350,11 +363,14 @@ class Repo:
                 "owner_commits": sorted(owner_commits),
             },
             "decisions": decisions,
-            "questions_doc": self.question_entries(),
+            # an entry is also to ratify when state.json holds its provisional decision open
+            "questions_doc": [{**q, "provisional": q["provisional"] or q["id"] in to_ratify}
+                              for q in self.question_entries()],
             "questions_file": self.questions_rel(),
             "queue": queue.get("actions", []) if isinstance(queue, dict) else [],
             "claim": claim if isinstance(claim, dict) else None,
             "stops": {kind: (self.root / name).exists() for kind, name in STOP_FILES.items()},
+            "stop_at": self.stop_at,
             "step_lock_age": self.age(self.h / "step.lock"),
             "heartbeat": heartbeat if isinstance(heartbeat, dict) else None,
             "files": files,
@@ -537,7 +553,10 @@ def parse_questions(text: str) -> list[dict]:
         decision = text.split("**Decision.**", 1)[1].strip() if "**Decision.**" in text else ""
         status = fields.get("status", "")
         out.append({"id": e["id"], "title": e["title"], "status": status,
-                    "open": bool(re.search(r"\bopen\b", status, re.I)), "raised_by": fields.get("raised by", ""),
+                    "open": bool(re.search(r"\bopen\b", status, re.I)),
+                    # to ratify: "provisional (resolver, <date>)"; once ratified the status starts
+                    # with "decided" and may still name the provisional decision it came from
+                    "provisional": bool(re.match(r"\s*provisional\b", status, re.I)), "raised_by": fields.get("raised by", ""),
                     "blocks": fields.get("blocks", ""), "decision": decision[:ENTRY_CHARS], "body": text[:ENTRY_CHARS]})
     return out
 
@@ -626,12 +645,17 @@ class Registry:
         for entry in saved:
             path = Path(entry.get("path", "")) if isinstance(entry, dict) else None
             if path and str(path):
-                self.repos.setdefault(repo_id(path), Repo(path))
+                repo = self.repos.setdefault(repo_id(path), Repo(path))
+                stop_at = entry.get("stop_at")
+                if (isinstance(stop_at, dict) and stop_at.get("kind") in STOP_FILES
+                        and isinstance(stop_at.get("at"), (int, float))):
+                    repo.stop_at = {"kind": stop_at["kind"], "at": float(stop_at["at"])}
 
     def save(self) -> None:
         self.config.parent.mkdir(parents=True, exist_ok=True)
-        data = {"_doc": "Repositories shown by laop_view (viewer.py).",
-                "repos": [{"path": str(r.root)} for r in self.repos.values()]}
+        data = {"_doc": "Repositories shown by laop_view (viewer.py), with the stops scheduled in them.",
+                "repos": [{"path": str(r.root), **({"stop_at": r.stop_at} if r.stop_at else {})}
+                          for r in self.repos.values()]}
         tmp = self.config.with_name(self.config.name + ".tmp")
         tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         os.replace(tmp, self.config)
@@ -668,6 +692,52 @@ class Registry:
 
     def get(self, rid: str) -> Repo | None:
         return self.repos.get(rid)
+
+    def schedule_stop(self, repos: list[Repo], kind: str | None, at) -> str:
+        """Schedule a stop of ``kind`` at ``at`` (epoch seconds) in each repository, replacing the
+        one scheduled there, or cancel it (``kind`` None); returns "" or why it was refused."""
+        if kind is not None:
+            if kind not in STOP_FILES:
+                return "kind must be soft, hard, emergency or null"
+            if not isinstance(at, (int, float)) or isinstance(at, bool):
+                return "at must be a time in seconds"
+            if not time.time() < at < time.time() + SCHEDULE_MAX_AHEAD:
+                return "Give a time in the future, within a year."
+        with self.lock:
+            for repo in repos:
+                repo.stop_at = {"kind": kind, "at": float(at)} if kind is not None else None
+            self.save()
+        return ""
+
+    def fire_due(self, now: float | None = None) -> list[str]:
+        """Create the scheduled stops that are due (also those missed while the viewer was closed:
+        the owner wanted the loop stopped by then) and forget them; returns what failed."""
+        now = time.time() if now is None else now
+        failed = []
+        with self.lock:
+            due = [r for r in self.repos.values() if r.stop_at and r.stop_at["at"] <= now]
+            for repo in due:
+                try:
+                    repo.set_stop(repo.stop_at["kind"], repo.stop_at["at"])
+                except OSError as exc:
+                    failed.append(f"{repo.root}: {exc}")  # kept: tried again at the next round
+                    continue
+                repo.stop_at = None
+            if due:
+                self.save()
+        return failed
+
+    def start_scheduler(self) -> None:
+        """Create the scheduled stops when they are due, as long as the server runs."""
+        def run() -> None:
+            while True:
+                try:
+                    for line in self.fire_due():
+                        print(f"Scheduled stop not created: {line}")
+                except Exception as exc:  # the scheduler must outlive one bad round
+                    print(f"Scheduled stops: {exc}")
+                time.sleep(SCHEDULE_POLL)
+        threading.Thread(target=run, name="laop-stop-scheduler", daemon=True).start()
 
     def listing(self) -> list[dict]:
         return [{"id": rid, "path": str(r.root), "name": r.name(), "ok": is_harness_repo(r.root)}
@@ -1053,6 +1123,7 @@ class Chats:
             if self.running() >= CHAT_MAX_RUNNING:
                 return None, f"{CHAT_MAX_RUNNING} discussions are already waiting for Claude: wait for one."
             chat = self.chats[cid] = Chat(cid, repo, kind, item)
+            chat.rid = rid
         why = chat.send(chat.intro, shown=False)
         if why:
             chat.error = why
@@ -1061,14 +1132,396 @@ class Chats:
     def get(self, cid: str) -> Chat | None:
         return self.chats.get(cid)
 
+    def of(self, rid: str) -> list[dict]:
+        """The discussions held about the decisions of one repository (for the chat list)."""
+        return [{"kind": c.kind, "item": c.item_id, "busy": c.busy, "count": len(c.entries), "created": c.created,
+                 "error": bool(c.error)} for c in self.chats.values() if getattr(c, "rid", None) == rid]
+
     def find(self, rid: str, kind: str, item_id: str) -> Chat | None:
         """The discussion already held about this item, if any (none is started)."""
         return self.chats.get(hashlib.sha256(f"{rid}|{kind}|{item_id}".encode()).hexdigest()[:16])
 
 
+# --------------------------------------------------------------------------- chats of a repository
+
+
+LOOP_COMMAND = "/laop-start"
+LOOP_COMMAND_FILE = ".claude/commands/laop-start.md"
+#: model aliases (Claude Code resolves each to the latest model of the family)
+MODELS = ("opus", "sonnet", "haiku", "fable")
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+#: permission modes offered; nobody can answer a permission prompt in a viewer chat, so a tool
+#: the mode and the repository's settings do not allow is refused (and the chat says so)
+PERMISSION_MODES = ("acceptEdits", "auto", "manual", "plan")
+CONV_DEFAULTS = {"model": "opus", "effort": "high", "mode": "acceptEdits"}
+CONV_MAX_TEXT = 20000
+#: tools whose result the chat shows (its first telling line): the step scripts, subagents, skills
+RESULT_TOOLS = {"Bash", "PowerShell", "Agent", "Task", "Skill"}
+START_LINE = re.compile(r"^\s*`?START LOOP:\s*(.+?)`?\s*$", re.M)
+CONV_SYSTEM = """You are talking with the owner of this repository in the laop viewer, a page that shows \
+the repository's laop task loop. The owner starts the loop with the viewer's Start loop button, which \
+sends {command}, or by asking you. When you suggest that the owner start the loop now, end your reply \
+with one line exactly in this form: START LOOP: <one line on what the loop will do>. The viewer shows \
+it as a button. Reply in {language}."""
+
+
+def tool_summary(block: dict, root: Path) -> str:
+    """One line for a tool call: its name and the argument that says what it does."""
+    name, args = block.get("name", "?"), block.get("input") or {}
+    if name == "Agent":
+        arg = " · ".join(str(x) for x in (args.get("subagent_type"), args.get("description")) if x)
+    elif name == "Skill":
+        arg = str(args.get("skill") or args.get("command") or "")
+    else:
+        arg = str(args.get("command") or args.get("file_path") or args.get("pattern") or args.get("path")
+                  or args.get("url") or args.get("query") or "")
+        if arg and Path(arg).is_absolute():
+            try:
+                arg = Path(arg).resolve().relative_to(root).as_posix()
+            except (ValueError, OSError):
+                pass
+    arg = " ".join(arg.split())
+    return f"{name} {arg[:200]}".strip()
+
+
+def result_line(content) -> str:
+    """The first line of a tool result that says something (for the step scripts: NEXT ACTION)."""
+    if isinstance(content, list):
+        content = "\n".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    lines = [ln.strip() for ln in str(content or "").splitlines() if ln.strip()]
+    pick = next((ln for ln in lines if re.match(r"(NEXT ACTION|LOOP |HALT|STOP|REFUSED|BLOCKED)", ln)), None)
+    return (pick or (lines[0] if lines else ""))[:240]
+
+
+class PlanUsage:
+    """The owner's plan windows (5 hours, 7 days) as the last answer of any chat reported them."""
+
+    def __init__(self, path: Path | None):
+        self.path, self.data, self.lock = path, {}, threading.Lock()
+        try:
+            self.data = json.loads(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+        except (OSError, ValueError):
+            self.data = {}
+
+    def update(self, info: dict) -> None:
+        windows = info.get("unifiedWindows") if isinstance(info, dict) else None
+        if not isinstance(windows, dict):
+            return
+        new = {}
+        for key in ("five_hour", "seven_day"):
+            w = windows.get(key)
+            if isinstance(w, dict) and isinstance(w.get("utilization"), (int, float)):
+                new[key] = {"used": float(w["utilization"]), "resets": w.get("resetsAt")}
+        if not new:
+            return
+        with self.lock:
+            self.data = {**self.data, **new, "at": time.time(), "status": info.get("status")}
+            if self.path:
+                try:
+                    self.path.parent.mkdir(parents=True, exist_ok=True)
+                    self.path.write_text(json.dumps(self.data), encoding="utf-8")
+                except OSError:
+                    pass
+
+    def view(self) -> dict:
+        with self.lock:
+            return dict(self.data)
+
+
+class Conversation:
+    """A chat with Claude Code in a repository, as in the desktop app: the project's settings and
+    hooks apply (the loop's guard sees it), no MCP servers. Each turn runs ``claude -p`` and resumes
+    the session, so the model, the effort and the permission mode can change between turns.
+    Messages sent while Claude works wait and go together as the next turn."""
+
+    def __init__(self, cid: str, root: Path, rid: str, store: Path | None, plan: PlanUsage, **saved):
+        self.id, self.root, self.rid, self.store, self.plan = cid, root, rid, store, plan
+        self.title: str = saved.get("title") or ""
+        self.created: float = saved.get("created") or time.time()
+        self.updated: float = saved.get("updated") or self.created
+        self.session: str | None = saved.get("session")
+        self.entries: list[dict] = saved.get("entries") or []
+        self.settings = {k: saved.get(k) or v for k, v in CONV_DEFAULTS.items()}
+        self.model_id: str = saved.get("model_id") or ""
+        self.context: dict = saved.get("context") or {}
+        self.desktop: float | None = saved.get("desktop")
+        self.earlier = bool(saved)  # loaded from disk: from an earlier run of the viewer
+        self.busy, self.error = False, ""
+        self.queue: list[str] = []
+        self.proc: subprocess.Popen | None = None
+        self.stopped = False
+        self.lock = threading.RLock()
+        self.tools: dict[str, int] = {}  # tool_use id -> entry index, for its result
+
+    # ------------------------------------------------------------------ state
+    def add(self, role: str, text: str, **extra) -> dict:
+        with self.lock:
+            e = {"n": len(self.entries), "role": role, "text": text, "at": time.time(), **extra}
+            self.entries.append(e)
+            self.updated = e["at"]
+            return e
+
+    def summary(self) -> dict:
+        with self.lock:
+            last = next((e for e in reversed(self.entries) if e["role"] in ("assistant", "user", "tool")), None)
+            return {"id": self.id, "title": self.title or "New chat", "created": self.created,
+                    "updated": self.updated, "busy": self.busy, "session": self.session,
+                    "earlier": self.earlier, "desktop": self.desktop, "error": bool(self.error),
+                    "last": (last["text"][:80] if last else ""), "last_role": last["role"] if last else None}
+
+    def view(self, since: int) -> dict:
+        with self.lock:
+            return {**self.summary(), "entries": self.entries[since:], "count": len(self.entries),
+                    "error": self.error, "settings": dict(self.settings), "model_id": self.model_id,
+                    "context": dict(self.context), "queued": len(self.queue),
+                    "loop_command": (self.root / LOOP_COMMAND_FILE).exists()}
+
+    def save(self) -> None:
+        if not self.store:
+            return
+        with self.lock:
+            doc = {"id": self.id, "repo": str(self.root), "title": self.title, "created": self.created,
+                   "updated": self.updated, "session": self.session, "entries": self.entries,
+                   "model_id": self.model_id, "context": self.context, "desktop": self.desktop, **self.settings}
+        try:
+            self.store.mkdir(parents=True, exist_ok=True)
+            tmp = self.store / f"{self.id}.json.tmp"
+            tmp.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.store / f"{self.id}.json")
+        except OSError:
+            pass
+
+    def configure(self, changes: dict) -> str:
+        allowed = {"model": MODELS, "effort": EFFORTS, "mode": PERMISSION_MODES}
+        for key, value in changes.items():
+            if key in allowed:
+                if value not in allowed[key]:
+                    return f"{key} must be one of {', '.join(allowed[key])}"
+                self.settings[key] = value
+        self.save()
+        return ""
+
+    # ------------------------------------------------------------------ turns
+    def send(self, text: str) -> str:
+        """Send the owner's message: now, or after the turn in progress. "" or why not."""
+        if self.desktop:
+            return "This chat continues in the desktop app: take it back first."
+        exe = claude_command()
+        if not exe:
+            return "The claude command was not found: install Claude Code and sign in (claude, then /login)."
+        with self.lock:
+            if not self.title:
+                self.title = "Loop" if text.strip() == LOOP_COMMAND else " ".join(text.split())[:60]
+            self.earlier = False
+            if self.busy:
+                self.queue.append(text)
+                self.add("user", text, queued=True)
+                return ""
+            self.busy, self.error, self.stopped = True, "", False
+            self.add("user", text)
+        threading.Thread(target=self._run, args=(exe, text), daemon=True).start()
+        return ""
+
+    def stop(self) -> None:
+        with self.lock:
+            self.stopped = True
+            dropped, self.queue = self.queue, []
+            for e in self.entries:
+                if e.get("queued"):
+                    e["queued"], e["dropped"] = False, True
+        proc = self.proc
+        if proc and proc.poll() is None:
+            proc.kill()
+        if dropped:
+            self.add("info", f"{len(dropped)} waiting message(s) not sent.")
+
+    def _run(self, exe: list[str], text: str) -> None:
+        while True:
+            self._turn(exe, text)
+            with self.lock:
+                if self.stopped or not self.queue:
+                    self.busy = False
+                    break
+                text, self.queue = "\n\n".join(self.queue), []
+                for e in self.entries:
+                    e.pop("queued", None)
+        self.save()
+
+    def _turn(self, exe: list[str], text: str) -> None:
+        lang = "the language the owner writes in"
+        try:
+            pj = json.loads((self.root / "harness" / "project.json").read_text(encoding="utf-8-sig"))
+            lang = pj.get("owner_language") or lang
+        except (OSError, ValueError, AttributeError):
+            pass
+        s = self.settings
+        mode = "default" if s["mode"] == "manual" else s["mode"]
+        cmd = [*exe, "-p", "--output-format", "stream-json", "--verbose", "--strict-mcp-config",
+               "--permission-mode", mode, "--model", s["model"], "--effort", s["effort"],
+               "--append-system-prompt", CONV_SYSTEM.format(command=LOOP_COMMAND, language=lang)]
+        if self.session:
+            cmd += ["--resume", self.session]
+        failed = ""
+        try:
+            self.proc = subprocess.Popen(cmd, cwd=self.root, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                                         creationflags=NO_WINDOW, env=claude_env())
+            self.proc.stdin.write(text)
+            self.proc.stdin.close()
+            for line in self.proc.stdout:
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(ev, dict):
+                    failed = self._event(ev) or failed
+            err = self.proc.stderr.read()
+            code = self.proc.wait()
+            if self.stopped:
+                self.add("info", "Stopped.")
+            elif failed or code:
+                self.error = explain_chat_error(failed or err.strip() or f"claude exited with code {code}")
+        except OSError as exc:
+            self.error = f"claude could not start: {exc}"
+        finally:
+            if self.proc:
+                for pipe in (self.proc.stdout, self.proc.stderr):
+                    pipe.close()
+            self.proc = None
+            self.save()
+
+    def _event(self, ev: dict) -> str:
+        """Take one stream-json event in; returns the error a result reports, if any."""
+        kind, top = ev.get("type"), ev.get("parent_tool_use_id") is None
+        if kind == "system" and ev.get("subtype") == "init":
+            self.session = ev.get("session_id") or self.session
+            self.model_id = ev.get("model") or self.model_id
+        elif kind == "rate_limit_event":
+            self.plan.update(ev.get("rate_limit_info") or {})
+        elif kind == "assistant" and top:
+            msg = ev.get("message") or {}
+            usage = msg.get("usage") or {}
+            used = sum(int(usage.get(k) or 0) for k in
+                       ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+            if used:
+                self.context["used"] = used
+            for block in msg.get("content") or []:
+                if block.get("type") == "tool_use":
+                    e = self.add("tool", tool_summary(block, self.root))
+                    if block.get("name") in RESULT_TOOLS:  # what a file read returns is not news
+                        self.tools[block.get("id", "")] = e["n"]
+                elif block.get("type") == "text" and block.get("text", "").strip():
+                    if block["text"].startswith("Failed to authenticate"):
+                        continue
+                    found = START_LINE.findall(block["text"])
+                    body = START_LINE.sub("", block["text"]).strip()
+                    extra = {"start_loop": found[-1].strip()} if found else {}
+                    if body or extra:
+                        self.add("assistant", body, **extra)
+        elif kind == "user" and top:
+            for block in (ev.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    n = self.tools.pop(block.get("tool_use_id", ""), None)
+                    if n is not None:
+                        with self.lock:
+                            self.entries[n]["result"] = result_line(block.get("content"))
+                            if block.get("is_error"):
+                                self.entries[n]["failed"] = True
+        elif kind == "result":
+            for model in (ev.get("modelUsage") or {}).values():
+                if isinstance(model, dict) and model.get("contextWindow"):
+                    self.context["window"] = int(model["contextWindow"])
+                    break
+            denied = ev.get("permission_denials") or []
+            if denied:
+                names = sorted({str(d.get("tool_name", "?")) for d in denied if isinstance(d, dict)})
+                self.add("denied", f"{len(denied)} tool call(s) refused by the permission mode "
+                                   f"({self.settings['mode']}): {', '.join(names)}.")
+            if ev.get("is_error"):
+                return str(ev.get("result") or ev.get("subtype") or "error")
+        return ""
+
+    def to_desktop(self) -> str:
+        """Open this chat's session in the Claude desktop app; the chat here stops taking messages."""
+        if self.busy:
+            return "Claude is working: stop it first."
+        if not self.session:
+            return "Nothing to continue yet: send a first message."
+        exe = claude_command()
+        if not exe:
+            return "The claude command was not found."
+        # --desktop refuses redirected output: on Windows it gets a console of its own (it closes
+        # by itself once the app has the session), elsewhere the viewer's terminal
+        try:
+            subprocess.Popen([*exe, "--desktop", "--resume", self.session], cwd=self.root, env=claude_env(),
+                             creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        except OSError as exc:
+            return f"claude could not start: {exc}"
+        self.desktop = time.time()
+        self.add("info", "Continued in the Claude desktop app. Take it back here when you are done there.")
+        self.save()
+        return ""
+
+    def take_back(self) -> None:
+        if self.desktop:
+            self.desktop = None
+            self.add("info", "Back in the viewer: the next message resumes the session, with what was said in the desktop app.")
+            self.save()
+
+
+class Convs:
+    """Every chat of every repository, kept in ``store`` (one JSON file each) across restarts."""
+
+    def __init__(self, store: Path | None):
+        self.store = store
+        self.plan = PlanUsage(store / "plan_usage.json" if store else None)
+        self.convs: dict[str, Conversation] = {}
+        self.lock = threading.Lock()
+        for f in sorted(store.glob("*.json")) if store and store.is_dir() else []:
+            if f.name == "plan_usage.json":
+                continue
+            try:
+                doc = json.loads(f.read_text(encoding="utf-8"))
+                root = Path(doc["repo"])
+                cid = str(doc["id"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            saved = {k: v for k, v in doc.items() if k not in ("id", "repo")}
+            self.convs[cid] = Conversation(cid, root, repo_id(root), store, self.plan, **saved)
+
+    def new(self, repo: Repo, rid: str, settings: dict) -> tuple[Conversation | None, str]:
+        conv = Conversation(uuid.uuid4().hex[:12], repo.root, rid, self.store, self.plan)
+        why = conv.configure({k: v for k, v in settings.items() if k in CONV_DEFAULTS})
+        if why:
+            return None, why
+        with self.lock:
+            self.convs[conv.id] = conv
+        return conv, ""
+
+    def get(self, cid: str) -> Conversation | None:
+        return self.convs.get(cid)
+
+    def of(self, rid: str) -> list[Conversation]:
+        return sorted((c for c in self.convs.values() if c.rid == rid), key=lambda c: -c.updated)
+
+    def remove(self, cid: str) -> bool:
+        conv = self.convs.get(cid)
+        if conv is None or conv.busy:
+            return False
+        with self.lock:
+            self.convs.pop(cid, None)
+        if self.store:
+            try:
+                (self.store / f"{cid}.json").unlink()
+            except OSError:
+                pass
+        return True
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     registry: Registry
     chats: Chats = Chats()
+    convs: Convs = Convs(None)
 
     def log_message(self, fmt, *args):  # quiet: one terminal line per request is noise
         pass
@@ -1147,6 +1600,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except ValueError:
                     since = 0
                 self.send_json(200, chat.view(since))
+            elif url.path == "/api/convs":
+                rid = (query.get("repo") or [""])[0]
+                self.send_json(200, {"convs": [c.summary() for c in self.convs.of(rid)],
+                                     "discussions": self.chats.of(rid), "plan": self.convs.plan.view(),
+                                     "options": {"models": MODELS, "efforts": EFFORTS, "modes": PERMISSION_MODES,
+                                                 "defaults": CONV_DEFAULTS, "loop_command": LOOP_COMMAND}})
+            elif url.path == "/api/conv":
+                conv = self.convs.get((query.get("id") or [""])[0])
+                if conv is None:
+                    self.send_json(404, {"error": "unknown chat"})
+                    return
+                try:
+                    since = max(0, int((query.get("since") or ["0"])[0]))
+                except ValueError:
+                    since = 0
+                self.send_json(200, conv.view(since))
             else:
                 self.send(404, b"not found", "text/plain; charset=utf-8")
         except (BrokenPipeError, ConnectionResetError):
@@ -1162,7 +1631,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not self.local_origin() or not self.headers.get("Content-Type", "").startswith("application/json"):
                 self.send(403, b"forbidden", "text/plain; charset=utf-8")
                 return
-            length = min(int(self.headers.get("Content-Length") or 0), 40_000)
+            length = min(int(self.headers.get("Content-Length") or 0), 100_000)
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except ValueError:
@@ -1192,6 +1661,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     except OSError as exc:
                         failed.append(f"{repo.root}: {exc}")
                 self.send_json(500 if failed else 200, {"ok": not failed, "count": len(targets), "failed": failed})
+            elif url.path == "/api/stop/schedule":
+                # {"id": <repo id> or "all", "kind": "soft" | "hard" | "emergency" | null (cancel),
+                #  "at": <epoch seconds>}
+                rid = str(body.get("id", ""))
+                targets = ([r for r in list(self.registry.repos.values()) if is_harness_repo(r.root)]
+                           if rid == "all" else [r for r in [self.registry.get(rid)] if r])
+                if not targets:
+                    self.send_json(404, {"error": "unknown repository"})
+                    return
+                why = self.registry.schedule_stop(targets, body.get("kind"), body.get("at"))
+                self.send_json(400 if why else 200, {"error": why} if why else {"ok": True, "count": len(targets)})
             elif url.path == "/api/chat/start":
                 # {"repo": <id>, "kind": "gate" | "question" | "provisional", "id": <item id>, "new": bool}
                 rid = str(body.get("repo", ""))
@@ -1228,6 +1708,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 if chat:
                     chat.stop()
                 self.send_json(200 if chat else 404, {"ok": bool(chat)})
+            elif url.path == "/api/conv/new":
+                # {"repo": <id>, "model", "effort", "mode"}: an empty chat; the first message starts it
+                rid = str(body.get("repo", ""))
+                repo = self.registry.get(rid)
+                if repo is None:
+                    self.send_json(404, {"error": "unknown repository"})
+                    return
+                conv, why = self.convs.new(repo, rid, {k: body[k] for k in CONV_DEFAULTS if body.get(k)})
+                self.send_json(200 if conv else 400, conv.view(0) if conv else {"error": why})
+            elif url.path.startswith("/api/conv/"):
+                conv = self.convs.get(str(body.get("id", "")))
+                if conv is None or self.registry.get(conv.rid) is None:
+                    self.send_json(404, {"error": "unknown chat, or its repository is not watched"})
+                    return
+                action, why = url.path[len("/api/conv/"):], ""
+                if action == "send":
+                    text = str(body.get("text", "")).strip()
+                    why = conv.send(text[:CONV_MAX_TEXT]) if text else "empty message"
+                elif action == "start_loop":
+                    # the loop command is this server's, never text sent by the page
+                    if not (conv.root / LOOP_COMMAND_FILE).exists():
+                        why = f"{LOOP_COMMAND_FILE} is missing: install or upgrade laop in this repository."
+                    elif conv.busy:
+                        why = "Claude is working: wait, or stop it first."
+                    else:
+                        why = conv.send(LOOP_COMMAND)
+                elif action == "stop":
+                    conv.stop()
+                elif action == "settings":
+                    why = conv.configure({k: body[k] for k in CONV_DEFAULTS if k in body})
+                elif action == "desktop":
+                    why = conv.to_desktop()
+                elif action == "takeback":
+                    conv.take_back()
+                elif action == "remove":
+                    ok = self.convs.remove(conv.id)
+                    self.send_json(200 if ok else 409, {"ok": ok} if ok else {"error": "Stop it first."})
+                    return
+                else:
+                    self.send(404, b"not found", "text/plain; charset=utf-8")
+                    return
+                self.send_json(409 if why else 200, {"error": why} if why else conv.view(0))
             else:
                 self.send(404, b"not found", "text/plain; charset=utf-8")
         except (BrokenPipeError, ConnectionResetError):
@@ -1237,8 +1759,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def serve(registry: Registry, port: int, open_browser: bool) -> int:
-    handler = type("BoundHandler", (Handler,), {"registry": registry})
+    handler = type("BoundHandler", (Handler,), {"registry": registry,
+                                                "convs": Convs(registry.config.parent / "chats")})
     server = None
+    registry.start_scheduler()
     for p in range(port, port + 20):
         try:
             server = http.server.ThreadingHTTPServer(("127.0.0.1", p), handler)
