@@ -981,7 +981,7 @@ class Chat:
         if self.repo.decision(self.kind, self.item_id) is None:
             return f"{self.item_id} is not open any more: decided meanwhile?"
         if self.kind == "doc":
-            ok, out = write_decision(self.repo, self.item_id, e["proposal"])
+            ok, out = apply_doc_decision(self.repo, self.item_id, e["proposal"])
             if ok:  # the loop reads state.json, not the file: free the tasks held on this question
                 for tid in tasks_blocked_on(self.repo, self.item_id):
                     ok2, out2 = run_owner_tool(self.repo, f"{OT_CMD} unblock task={tid}")
@@ -1122,6 +1122,33 @@ def write_decision(repo: Repo, qid: str, decision: str) -> tuple[bool, str]:
     except OSError as exc:
         return False, f"{rel} not written: {exc}"
     return True, f"{rel}: {qid} marked decided, with the decision:\n{decision}"
+
+
+def apply_doc_decision(repo: Repo, qid: str, decision: str) -> tuple[bool, str]:
+    """Write the decision of ``qid`` as the owner: the open questions file is first recorded as an
+    owner edit (``owner_write``: the guard sees Claude sessions only, never this server), then
+    written, then committed alone, so that no task is charged with it."""
+    rel = repo.questions_rel()
+    ok, rec = run_owner_tool(repo, f"{OT_CMD} owner_write path={shlex.quote(rel)}")
+    if not ok:
+        state = repo.read_json("harness/state.json", [], {}) or {}
+        if state.get("current") or state.get("loop_active"):
+            return False, (f"{rec}\nNothing written: the loop is running and without the record the task "
+                           "in flight would be charged with the edit. Upgrade the harness (/laop upgrade).")
+        rec = ""  # an older harness without owner_write: nothing to record while the loop is idle
+    ok, out = write_decision(repo, qid, decision)
+    if not ok:
+        return False, out
+    msg = f"owner: {qid} decided (laop monitor)"
+    try:
+        res = subprocess.run(["git", "commit", "--only", "-q", "-m", msg, "--", rel], cwd=repo.root,
+                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                             creationflags=NO_WINDOW)
+        done, why = res.returncode == 0, (res.stdout + res.stderr).strip()[:600]
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        done, why = False, str(exc)
+    out += f"\ncommitted: {msg}" if done else f"\nNOT committed ({why or 'git failed'}): commit {rel} yourself."
+    return True, "\n".join(x for x in (rec, out) if x)
 
 
 def explain_chat_error(msg: str) -> str:

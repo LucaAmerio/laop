@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import sys
 import threading
@@ -435,7 +436,44 @@ class DecisionsTest(unittest.TestCase):
         self.viewer.run_owner_tool = lambda r, command: (ran.append(command), (True, "done"))[1]
         self.addCleanup(setattr, self.viewer, "run_owner_tool", run)
         self.assertEqual(chat.apply(0), "")
-        self.assertEqual(ran, ["python harness/owner_tools.py unblock task=T1"])
+        self.assertEqual(ran, ["python harness/owner_tools.py owner_write path=q.md",
+                               "python harness/owner_tools.py unblock task=T1"])
+        self.assertIn("NOT committed", chat.entries[-1]["text"])  # no git repository here: said, not hidden
+
+    def test_a_doc_decision_is_recorded_as_the_owners_then_committed(self):
+        # found in a real project: the monitor's decisions stayed uncommitted and unrecorded, and
+        # step_verify refused the claim of the task in flight for a file it never touched
+        tmp = Path(tempfile.mkdtemp(prefix="laop_viewer_commit_"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "harness").mkdir()
+        (tmp / "harness" / "project.json").write_text('{"open_questions": "q.md"}', encoding="utf-8")
+        (tmp / "harness" / "state.json").write_text('{"loop_active": true, "tasks": {}}', encoding="utf-8")
+        (tmp / "q.md").write_text("## Q1: A\n\n- Status: open\n\n**Decision.** _(owner)_\n", encoding="utf-8")
+        (tmp / "other.txt").write_text("x\n", encoding="utf-8")
+        for args in (["init", "-q"], ["config", "user.email", "o@x"], ["config", "user.name", "o"],
+                     ["add", "-A"], ["commit", "-qm", "init"]):
+            subprocess.run(["git", *args], cwd=tmp, check=True, capture_output=True)
+        (tmp / "other.txt").write_text("staged by someone else\n", encoding="utf-8")
+        subprocess.run(["git", "add", "other.txt"], cwd=tmp, check=True)
+        repo = self.viewer.Repo(tmp)
+        ran = []
+        run = self.viewer.run_owner_tool
+        self.viewer.run_owner_tool = lambda r, command: (ran.append(command), (True, "recorded"))[1]
+        self.addCleanup(setattr, self.viewer, "run_owner_tool", run)
+        ok, out = self.viewer.apply_doc_decision(repo, "Q1", "(a)")
+        self.assertTrue(ok, out)
+        self.assertEqual(ran, ["python harness/owner_tools.py owner_write path=q.md"])
+        self.assertIn("committed: owner: Q1 decided", out)
+        files = repo.git("show", "--name-only", "--format=", "HEAD").split()
+        self.assertEqual(files, ["q.md"])  # that file alone: what else is staged stays out
+        self.assertEqual(repo.git("status", "--porcelain"), "M  other.txt")
+        # the record refused while the loop runs: nothing written, so no task is charged with it
+        (tmp / "q.md").write_text("## Q2: B\n\n- Status: open\n\n**Decision.** _(owner)_\n", encoding="utf-8")
+        self.viewer.run_owner_tool = lambda r, command: (False, "REFUSED: unknown action 'owner_write'")
+        ok, out = self.viewer.apply_doc_decision(repo, "Q2", "(b)")
+        self.assertFalse(ok)
+        self.assertIn("Nothing written", out)
+        self.assertIn("_(owner)_", (tmp / "q.md").read_text(encoding="utf-8"))
 
     def test_proposed_commands_are_checked(self):
         pc = self.viewer.proposed_command

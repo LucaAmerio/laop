@@ -1241,12 +1241,15 @@ def ratify_entry(key: str) -> list[str]:
     return out
 
 
-def record_owner_write(state: dict, rel: str) -> None:
+def record_owner_write(state: dict, rel: str) -> bool:
     """Record a file an owner action wrote in the working tree (as the guard does for the owner's
-    own edits), so that the task in flight is not charged with it."""
-    if state.get("current") or state.get("loop_active"):
-        statefile.update(OWNER_WRITES_FILE, lambda d: d.update(
-            paths=sorted(set(d.get("paths", [])) | {rel})))
+    own edits), so that the task in flight is not charged with it. False: the loop is not
+    active, nothing to record."""
+    if not (state.get("current") or state.get("loop_active")):
+        return False
+    statefile.update(OWNER_WRITES_FILE, lambda d: d.update(
+        paths=sorted(set(d.get("paths", [])) | {rel})))
+    return True
 
 
 # --------------------------------------------------------------------------- owner actions

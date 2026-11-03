@@ -33,6 +33,10 @@ trust           category=<R or D id> level=owner|warmup|auto
                                         until the warm-up is passed, or provisionally by the resolver
 owner_commit    commit=<sha>            an owner commit made while a task was dispatched: excluded
                                         from every task's range
+owner_write     path=<rel>              record a file you are about to edit outside a Claude session
+                                        (an editor, the laop monitor) as yours while the loop runs,
+                                        as the guard does for your sessions: no task is charged
+                                        with it. Applied at once, never queued
 foreign_commit  task=<id> commit=<sha>  a commit excluded for that task only
 allow_path      task=<id> path=<rel>    a path outside the role's allowlist accepted for that task
 clear_halt                              clear a halt so that the loop can run again
@@ -87,6 +91,18 @@ def status() -> str:
     return "\n".join(lines)
 
 
+def owner_rel(path: str) -> str:
+    """``path`` relative to the repository, POSIX style; '' outside it or inside .git."""
+    if not path:
+        return ""
+    target = (L.REPO / path).resolve()
+    try:
+        rel = target.relative_to(L.REPO.resolve()).as_posix()
+    except ValueError:
+        return ""
+    return "" if rel in ("", ".", ".git") or rel.startswith(".git/") else rel
+
+
 def run(entry: dict) -> str:
     action = entry["action"]
     if action == "status":
@@ -106,6 +122,14 @@ def run(entry: dict) -> str:
     if action == "approvals":
         milestone = entry.get("milestone") or (L.load_json(L.TASKS_FILE) or {}).get("milestone")
         return approvals.report(L.REPO, milestone)
+    if action == "owner_write":
+        # not queued: the record must be there before the write, as the guard records it
+        rel = owner_rel(entry.get("path", ""))
+        if not rel:
+            return f"{REFUSED} owner_write needs path=<file inside the repository>."
+        if L.record_owner_write(statefile.read(L.STATE_FILE), rel):
+            return f"{rel} recorded as an owner edit: no task is charged with it."
+        return f"{rel}: the loop is not active, nothing to record."
     if action == "archive":
         doc = L.load_tasks()
         target = L.LOG_DIR / f"state_{doc.get('milestone', 'unknown')}_{dt.datetime.now():%Y%m%d_%H%M}.json"

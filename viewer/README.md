@@ -57,7 +57,11 @@ plain words; when you reach a decision it proposes it, with an **Apply** button.
 confirmation the viewer runs the proposed `owner_tools.py` command in the repository (a gate, a
 question waiting for `decide`, a provisional decision), or writes the decision after
 `**Decision.**` in the open questions file and marks the entry decided (changing nothing else in
-the file, and committing nothing). Only the decision the server took from Claude's reply and
+the file). Before writing, it records the file as yours with `owner_tools.py owner_write`, since the
+loop's guard never sees this server; after writing, it commits that file alone
+(`owner: <id> decided (laop monitor)`). While the loop runs, a harness without `owner_write`
+(older than 0.5.1) gets nothing written: upgrade it. A failed commit is reported: commit the file
+yourself. Only the decision the server took from Claude's reply and
 checked is applied, never text sent by the page. Going back to an item resumes its discussion.
 Discussions live as long as the server.
 

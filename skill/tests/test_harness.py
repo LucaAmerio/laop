@@ -733,6 +733,24 @@ class LoopTests(HarnessTest):
         self.assertEqual(r.write("CLAUDE.md", session="B")[0], 0)
         self.assertFalse((r.root / "harness" / "owner_writes.json").exists())
 
+    def test_owner_write_records_an_edit_made_outside_claude(self):
+        # the laop monitor writes the owner's decisions from Python: the guard never sees them
+        r = self.r
+        r.tasks([task()])
+        r.commit_file("docs/open_questions.md", "# Open questions\n", "questions")
+        self.assertIn("not active", r.owner("owner_write", "path=docs/open_questions.md"))
+        self.assertFalse((r.root / "harness" / "owner_writes.json").exists())
+        r.step("step_next")
+        self.assertIn("recorded", r.owner("owner_write", "path=docs/open_questions.md"))
+        for bad in ("path=../outside.md", "path=.git/config", "path="):
+            self.assertTrue(r.owner("owner_write", bad).startswith("REFUSED"), bad)
+        recorded = json.loads((r.root / "harness" / "owner_writes.json").read_text())["paths"]
+        self.assertEqual(recorded, ["docs/open_questions.md"])
+        (r.root / "docs" / "open_questions.md").write_text("owner's answers\n")
+        r.commit_file("src/b.py", "B = 2\n")
+        r.claim("M1-001")
+        self.assertIn("REVIEW", r.step("step_verify"))  # not the task's uncommitted work
+
     def test_lint_warns_about_paths_outside_the_allowlist(self):
         r = self.r
         r.tasks([task(description="Amend `docs/plan/m1.md` and update `src/c.py`.")])

@@ -1,5 +1,15 @@
 # laop changelog
 
+## 0.5.1 (2026-10-30)
+
+- New owner action `owner_write path=<rel>`: records a file the owner is about to edit outside a
+  Claude session in `harness/owner_writes.json`, as the guard does for the owner's sessions, so that
+  no task is charged with it. Applied at once, never queued; nothing recorded while the loop is idle.
+  Found with the laop monitor: a decision applied from the Questions view wrote
+  `docs/open_questions.md` from Python, the guard never saw it, and `step_verify` refused the claim
+  of the task in flight for uncommitted changes it had not made.
+- `loop_core.record_owner_write` returns whether it recorded.
+
 ## 0.5.0 (2026-10-29)
 
 Three stops instead of two. **`AGENT_STOP` changes meaning**: it no longer blocks every tool call;
