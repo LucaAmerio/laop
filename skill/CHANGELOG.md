@@ -1,5 +1,12 @@
 # laop changelog
 
+## 0.5.2 (2026-11-06)
+
+- guard.py RUF005 (list concatenation) fixed; it failed `ruff check .` in projects that select RUF
+  (Talos M6C1-001 to 004 blocked). Behaviour unchanged.
+- New test `tests/test_core_lint.py`: runs `ruff check --select RUF005` on every core Python file;
+  skipped when ruff is not installed.
+
 ## 0.5.1 (2026-10-30)
 
 - New owner action `owner_write path=<rel>`: records a file the owner is about to edit outside a

@@ -162,7 +162,7 @@ def log_block(message: str) -> None:
     try:
         BLOCKS_LOG.parent.mkdir(parents=True, exist_ok=True)
         lines = BLOCKS_LOG.read_text(encoding="utf-8").splitlines() if BLOCKS_LOG.exists() else []
-        lines = lines[-(BLOCKS_KEEP - 1):] + [json.dumps({**CALL, "time": time.time(),
+        lines = [*lines[-(BLOCKS_KEEP - 1):], json.dumps({**CALL, "time": time.time(),
                                                            "message": message[:600]})]
         BLOCKS_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception:  # noqa: BLE001 - logging must never let the call through
