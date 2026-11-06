@@ -6,6 +6,7 @@ drives the guard with fake hook events and the step scripts as the orchestrator 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -283,6 +284,64 @@ class GuardTests(HarnessTest):
         self.assertEqual(up.returncode, 0, up.stdout)
         self.assertEqual(subprocess.run([sys.executable, str(LAOP), "doctor", str(r.root)],
                                         capture_output=True, text=True).returncode, 0)
+
+    def blocks(self) -> list[dict]:
+        log = self.r.root / "harness" / "logs" / "guard_blocks.jsonl"
+        if not log.exists():
+            return []
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+    def test_session_check_logs_no_block(self):
+        """Talos 0.5.2: each SessionStart self-test logged 'builder Write CLAUDE.md' as a block."""
+        r = self.r
+        proc = subprocess.run([sys.executable, str(r.root / "harness" / "session_check.py")], cwd=r.root,
+                              capture_output=True, text=True, env=r.env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.blocks(), [])
+        self.assertFalse((r.root / "harness" / "logs" / "guard_heartbeat.json").exists())
+
+    def test_block_log_records_caller_and_content(self):
+        r = self.r
+        body = "x" * 5000
+        code, _ = r.guard({"tool_name": "Write", "agent_type": "builder", "agent_id": "ag1",
+                           "session_id": "S1", "transcript_path": "/t.jsonl",
+                           "tool_input": {"file_path": "CLAUDE.md", "content": body}})
+        self.assertEqual(code, 2)
+        code, _ = r.guard({"tool_name": "Edit", "agent_type": "builder", "agent_id": "ag1",
+                           "tool_input": {"file_path": "CLAUDE.md", "old_string": "a", "new_string": "b"}})
+        self.assertEqual(code, 2)
+        command = "git pull " + "y" * 700
+        self.assertEqual(r.shell(command, agent="builder")[0], 2)
+        write, edit, shell = self.blocks()
+        self.assertEqual((write["role"], write["role_source"], write["agent_id"], write["session_id"]),
+                         ("builder", "subagent", "ag1", "S1"))
+        self.assertEqual((write["hook_event_name"], write["transcript_path"], write["cwd"]),
+                         ("PreToolUse", "/t.jsonl", str(r.root)))
+        self.assertEqual(write["path"], "CLAUDE.md")
+        self.assertEqual(Path(write["path_resolved"]), (r.root / "CLAUDE.md").resolve())
+        content = write["content"]["content"]
+        self.assertEqual((len(content["text"]), content["length"], content["truncated"]), (4096, 5000, True))
+        self.assertEqual(content["sha256"], hashlib.sha256(body.encode()).hexdigest())
+        self.assertEqual((edit["content"]["old_string"]["text"], edit["content"]["new_string"]["text"]),
+                         ("a", "b"))
+        self.assertEqual(shell["command"]["text"], command)
+        self.assertEqual(shell["command"]["length"], len(command))
+
+    def test_role_source_of_main_session_started_as_agent(self):
+        """agent_type without agent_id: a main session run as the agent, not a loop subagent; the
+        step scripts do not count its blocks as the subagent's."""
+        r = self.r
+        code, _ = r.guard({"tool_name": "Write", "agent_type": "builder", "tool_input": {"file_path": "CLAUDE.md"}})
+        self.assertEqual(code, 2)
+        self.assertEqual(self.blocks()[-1]["role_source"], "agent_type_without_agent_id")
+
+        def note() -> str:
+            return subprocess.run([sys.executable, "-c", "import loop_core as L; "
+                                   "print(L.guard_blocks_note('builder', 0))"], cwd=r.root / "harness",
+                                  capture_output=True, text=True, env=r.env, check=True).stdout.strip()
+        self.assertEqual(note(), "")
+        r.write("CLAUDE.md", agent="builder")
+        self.assertIn("1 call(s)", note())
 
 
 UI_REVIEWER = {"reviewer": True, "allow_write": ["harness/verdicts/**", "harness/screenshots/**"],

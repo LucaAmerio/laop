@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -32,8 +33,11 @@ def run_guard(event: dict) -> tuple[int, str]:
     """Run the guard on one fake event; return (exit code, stderr)."""
     guard = REPO / ".claude" / "hooks" / "guard.py"
     event = {"hook_event_name": "PreToolUse", "cwd": str(REPO), "session_id": "session-selftest", **event}
+    # LAOP_GUARD_SELFTEST: the guard does not log these blocks in harness/logs/guard_blocks.jsonl
+    # nor write its heartbeat: they are the self-test, not calls of an agent.
     proc = subprocess.run([sys.executable, str(guard)], input=json.dumps(event).encode("utf-8"),
-                          capture_output=True, cwd=REPO, timeout=30, check=False)
+                          capture_output=True, cwd=REPO, timeout=30, check=False,
+                          env={**os.environ, "LAOP_GUARD_SELFTEST": "1"})
     return proc.returncode, proc.stderr.decode("utf-8", "replace").strip()
 
 

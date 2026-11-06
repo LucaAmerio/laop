@@ -491,7 +491,10 @@ def guard_blocks_note(agent: str, since: float) -> str:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if entry.get("agent_type") == agent and entry.get("time", 0) >= since:
+            # role_source (0.5.3): a block of a main session started as this agent is not a call
+            # of the subagent the loop spawned.
+            if (entry.get("agent_type") == agent and entry.get("time", 0) >= since
+                    and entry.get("role_source", "subagent") == "subagent"):
                 blocks.append(entry)
     except OSError:
         return ""

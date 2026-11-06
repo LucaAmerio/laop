@@ -41,6 +41,7 @@ re-checked by step_verify.py on the git diff of every task; reads have no second
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -143,8 +144,12 @@ FIX_HINT = (
 
 BLOCKS_LOG = PROJECT_DIR / "harness" / "logs" / "guard_blocks.jsonl"
 BLOCKS_KEEP = 200  # entries kept in the log
+LOG_FIELD_CAP = 4096  # characters kept of each text field of a blocked call (content, command)
 #: The call being checked, for the blocks log: set by run() once the role is known.
 CALL: dict = {}
+#: Set by harness/session_check.py on the guard it runs on fake events: those blocks are the
+#: self-test, not calls of an agent, and are neither logged nor taken as the heartbeat.
+SELFTEST = os.environ.get("LAOP_GUARD_SELFTEST") == "1"
 
 
 def deny(message: str) -> None:
@@ -156,17 +161,57 @@ def deny(message: str) -> None:
 
 def log_block(message: str) -> None:
     """Record a blocked call of a loop role in harness/logs/guard_blocks.jsonl: the step scripts
-    tell a reviewer that wrote nothing from one the guard stopped. Never fails the deny."""
-    if not CALL or CALL.get("role") == pathrules.OWNER_ROLE:
+    tell a reviewer that wrote nothing from one the guard stopped, and the owner sees who made the
+    call and what it tried to write. Never fails the deny."""
+    if SELFTEST or not CALL or CALL.get("role") == pathrules.OWNER_ROLE:
         return
     try:
         BLOCKS_LOG.parent.mkdir(parents=True, exist_ok=True)
         lines = BLOCKS_LOG.read_text(encoding="utf-8").splitlines() if BLOCKS_LOG.exists() else []
         lines = [*lines[-(BLOCKS_KEEP - 1):], json.dumps({**CALL, "time": time.time(),
-                                                           "message": message[:600]})]
+                                                           "message": message[:LOG_FIELD_CAP]})]
         BLOCKS_LOG.write_text("\n".join(lines) + "\n", encoding="utf-8")
     except Exception:  # noqa: BLE001 - logging must never let the call through
         pass
+
+
+def logged_text(value) -> dict:
+    """Return a text field of a blocked call as logged.
+
+    The first LOG_FIELD_CAP characters, the full length and the sha256 of the full text (to
+    compare two attempts without keeping them whole).
+    """
+    text = value if isinstance(value, str) else json.dumps(value)
+    return {"text": text[:LOG_FIELD_CAP], "length": len(text), "truncated": len(text) > LOG_FIELD_CAP,
+            "sha256": hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()}
+
+
+def call_details(event: dict, tool: str, tool_input: dict, cwd: str | None) -> dict:
+    """Return what the blocks log records of a call besides its role.
+
+    Who made it (session, agent, transcript), and for writes and shell commands what it tried
+    to do.
+    """
+    details = {key: event.get(key) for key in ("session_id", "agent_id", "hook_event_name",
+                                                 "transcript_path", "permission_mode")}
+    details["cwd"] = cwd
+    if tool in WRITE_TOOLS:
+        path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+        details["path"] = path
+        try:
+            details["path_resolved"] = pathrules._absolute(path, PROJECT_DIR, cwd) if path else ""
+        except (OSError, ValueError):
+            details["path_resolved"] = None
+        content = {}
+        for key in ("content", "old_string", "new_string", "new_source"):
+            if tool_input.get(key) is not None:
+                content[key] = logged_text(tool_input[key])
+        if tool_input.get("edits") is not None:  # MultiEdit
+            content["edits"] = logged_text(tool_input["edits"])
+        details["content"] = content
+    elif tool in SHELL_TOOLS:
+        details["command"] = logged_text(tool_input.get("command") or "")
+    return details
 
 
 class Unparsable(ValueError):
@@ -788,6 +833,8 @@ def write_heartbeat(event: dict) -> None:
     """Record that the hook ran, and for which command; the step scripts refuse to run unless
     the heartbeat shows the guard intercepted the very shell call that started them."""
     tool_input = event.get("tool_input") or {}
+    if SELFTEST:
+        return
     try:
         HEARTBEAT.parent.mkdir(parents=True, exist_ok=True)
         HEARTBEAT.write_text(json.dumps({
@@ -937,12 +984,17 @@ def run() -> None:
         bind_orchestrator(session_id)
     try:
         pathrules.read_state(PROJECT_DIR)  # an unreadable state blocks every role (fail closed)
-        role = pathrules.effective_role(PROJECT_DIR, event.get("agent_type"), session_id)
+        role, role_source = pathrules.role_resolution(PROJECT_DIR, event.get("agent_type"),
+                                                      session_id, event.get("agent_id"))
     except ValueError as exc:
         deny(f"{exc} Failing closed.")
-    CALL.update(role=role, agent_type=event.get("agent_type"), tool=tool,
+    CALL.update(role=role, role_source=role_source, agent_type=event.get("agent_type"), tool=tool,
                 target=(tool_input.get("file_path") or tool_input.get("notebook_path")
                         or tool_input.get("command") or "")[:300])
+    try:
+        CALL.update(call_details(event, tool, tool_input, cwd))
+    except Exception:  # noqa: BLE001 - the details are for the log only, never block on them
+        pass
     if (PROJECT_DIR / "AGENT_STOP").exists() and role != pathrules.OWNER_ROLE:
         check_stop(role, tool, tool_input, cwd)
 

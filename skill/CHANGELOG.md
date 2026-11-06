@@ -1,5 +1,24 @@
 # laop changelog
 
+## 0.5.3 (2026-11-06)
+
+- The guard's block log (`harness/logs/guard_blocks.jsonl`) says who made a blocked call and what
+  it tried. New fields: `session_id`, `agent_id`, `transcript_path`, `cwd`, `hook_event_name`,
+  `permission_mode`, `role_source`; for Write/Edit/MultiEdit/NotebookEdit `path`, `path_resolved`
+  and `content` (`content`, `old_string`/`new_string`, `edits`, `new_source`); for Bash/PowerShell
+  `command`. Each text field keeps 4096 characters plus the full `length` and `sha256`; `message`
+  is no longer cut at 600 characters.
+- Fix: the SessionStart self-test (`session_check.py`) no longer writes to the block log or the
+  heartbeat. It runs the guard on a fake "loop role writes CLAUDE.md" event; up to 0.5.2 each
+  session start, including the owner's, logged that as a real `builder` block (Talos: 9
+  "Write CLAUDE.md" entries matching owner prompts in a new session). The self-test now sets
+  `LAOP_GUARD_SELFTEST=1`.
+- `role_source` says how the role was resolved: `subagent` (agent_type is a role and the call has an
+  agent_id), `agent_type_without_agent_id` (a main session started as that agent, e.g. `claude
+  --agent builder`: it keeps the role's restrictions), `orchestrator_binding`, `owner_default`.
+  `step_record`/`step_resolve` count only `subagent` blocks as the reviewer's or resolver's.
+- New `pathrules.role_resolution`; `effective_role` is unchanged.
+
 ## 0.5.2 (2026-11-06)
 
 - guard.py RUF005 (list concatenation) fixed; it failed `ruff check .` in projects that select RUF

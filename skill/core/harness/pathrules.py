@@ -212,10 +212,26 @@ def effective_role(repo: Path, agent_type: str | None, session_id: str | None = 
     agent type (Explore, general-purpose, ...) inherits the role of its main conversation, so it
     can never exceed the permissions of the session that spawned it.
     """
+    return role_resolution(repo, agent_type, session_id)[0]
+
+
+def role_resolution(repo: Path, agent_type: str | None, session_id: str | None = None,
+                    agent_id: str | None = None) -> tuple[str, str]:
+    """Return ``effective_role`` and how it was resolved, for the guard's blocks log.
+
+    - ``subagent``: ``agent_type`` names a role and the call comes from a subagent (``agent_id``);
+    - ``agent_type_without_agent_id``: ``agent_type`` names a role but the hook input has no
+      ``agent_id``: a main session started as that agent (``claude --agent <role>``, or the
+      ``agent`` setting), not a subagent the loop spawned. It gets that role all the same (never
+      more permissions than the role), and the log says so;
+    - ``orchestrator_binding``: a main conversation bound as the orchestrator in state.json;
+    - ``owner_default``: any other main conversation.
+    """
     roles = load_roles(repo)
     if agent_type and agent_type in roles and agent_type not in (OWNER_ROLE, ORCHESTRATOR_ROLE):
-        return agent_type
-    return main_role(repo, session_id)
+        return agent_type, "subagent" if agent_id else "agent_type_without_agent_id"
+    role = main_role(repo, session_id)
+    return role, "orchestrator_binding" if role == ORCHESTRATOR_ROLE else "owner_default"
 
 
 def role_config(repo: Path, role: str | None) -> tuple[str, dict | None]:
