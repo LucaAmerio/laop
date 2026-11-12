@@ -37,3 +37,13 @@ python -m unittest discover -s viewer/tests
 ```
 
 Python 3.11+, standard library only (the desktop window needs `pywebview`, the build `pyinstaller` and `pillow`).
+
+## Status
+
+Experimental and changing quickly: the harness format and the installer's commands may change
+between minor versions (see [`skill/CHANGELOG.md`](skill/CHANGELOG.md)). Use `/laop upgrade` to
+move an installed repository to a new version.
+
+## License
+
+[MIT](LICENSE) © 2026 Luca Amerio
