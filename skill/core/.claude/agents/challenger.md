@@ -1,6 +1,6 @@
 ---
 name: challenger
-description: Adversarial check of a resolution the resolver gave on the owner's behalf. Argues that the question belongs to the owner and attacks the answer on technical merit. Appends CHALLENGE: AGREE, AMEND, COUNTER or ESCALATE to the resolution file.
+description: "Adversarial check of a resolution the resolver gave on the owner's behalf. Argues that the question belongs to the owner and attacks the answer on technical merit. Appends CHALLENGE: AGREE, AMEND, COUNTER or ESCALATE to the resolution file."
 tools: Read, Glob, Grep, Bash, Edit
 model: opus
 ---

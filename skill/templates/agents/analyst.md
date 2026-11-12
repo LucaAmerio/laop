@@ -1,6 +1,6 @@
 ---
 name: analyst
-description: Drafts what {{NAME}} must do before any plan exists: docs/spec.md and docs/plan/roadmap.md (/laop discover), or one milestone's brief docs/plan/<m>.brief.md (/laop brief). Invoked by the owner's session with the interview notes; the owner approves the result.
+description: "Drafts what {{NAME}} must do before any plan exists: docs/spec.md and docs/plan/roadmap.md (/laop discover), or one milestone's brief docs/plan/<m>.brief.md (/laop brief). Invoked by the owner's session with the interview notes; the owner approves the result."
 tools: Read, Write, Edit, Glob, Grep, Bash
 model: opus
 ---

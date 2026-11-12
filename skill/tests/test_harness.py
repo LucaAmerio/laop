@@ -285,6 +285,23 @@ class GuardTests(HarnessTest):
         self.assertEqual(subprocess.run([sys.executable, str(LAOP), "doctor", str(r.root)],
                                         capture_output=True, text=True).returncode, 0)
 
+    def test_upgrade_accepts_local_edit_equal_to_new_core(self):
+        """Argus 0.5.x: the owner quoted challenger.md's description as 0.6.1 does; upgrade refused it
+        as modified locally although nothing would be lost."""
+        r = self.r
+        lock_path = r.root / "harness" / "core.lock.json"
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        rel = ".claude/agents/challenger.md"
+        self.assertIn(rel, lock["files"])
+        lock["files"][rel] = "0" * 64  # installed text differed from the file now on disk
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        doc = subprocess.run([sys.executable, str(LAOP), "doctor", str(r.root)], capture_output=True, text=True)
+        self.assertIn(rel, doc.stdout)
+        up = subprocess.run([sys.executable, str(LAOP), "upgrade", str(r.root)], capture_output=True, text=True)
+        self.assertEqual(up.returncode, 0, up.stdout)
+        self.assertEqual(subprocess.run([sys.executable, str(LAOP), "doctor", str(r.root)],
+                                        capture_output=True, text=True).returncode, 0)
+
     def blocks(self) -> list[dict]:
         log = self.r.root / "harness" / "logs" / "guard_blocks.jsonl"
         if not log.exists():

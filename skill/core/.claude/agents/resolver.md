@@ -1,6 +1,6 @@
 ---
 name: resolver
-description: Decides, on the owner's behalf and provisionally, an open question a loop agent stopped on, or escalates it to the owner. Spawned by the loop orchestrator with one question. Writes a resolution file whose first line is RESOLUTION: ANSWER or RESOLUTION: ESCALATE.
+description: "Decides, on the owner's behalf and provisionally, an open question a loop agent stopped on, or escalates it to the owner. Spawned by the loop orchestrator with one question. Writes a resolution file whose first line is RESOLUTION: ANSWER or RESOLUTION: ESCALATE."
 tools: Read, Glob, Grep, Bash, Write
 model: opus
 ---

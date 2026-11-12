@@ -1,5 +1,18 @@
 # laop changelog
 
+## 0.6.1 (2026-11-12)
+
+Agent frontmatter is strict YAML (Argus: `upgrade` to 0.6.0 refused because the owner had quoted
+two core agents' descriptions).
+
+- The `description` of `challenger`, `resolver` (core) and of the `analyst`, `evaluator` and
+  `ui-reviewer` templates is quoted: unquoted, its `": "` (`VERDICT: PASS`, `CHALLENGE: AGREE`, ...)
+  is rejected by `yaml.safe_load`, although Claude Code accepts it. Run `upgrade` for the core
+  agents; projects edit their own copies of the templates if they want it.
+- `upgrade` no longer counts as modified locally a core file whose text already equals this
+  version's: nothing would be lost by replacing it. `doctor` still reports it until the upgrade.
+- New test: every agent frontmatter parses with `yaml.safe_load` (skipped without PyYAML).
+
 ## 0.6.0 (2026-11-12)
 
 The checks no longer run inside one Bash call, so they are no longer capped at 10 minutes (Talos

@@ -382,7 +382,10 @@ def upgrade(repo: Path, force: bool) -> int:
         print(f"{repo} has no {LOCK_REL}: use 'init'.")
         return 1
     old = json.loads(lock_path.read_text(encoding="utf-8"))
-    modified = drift(repo)
+    # a core file edited locally into exactly this version's text loses nothing on upgrade
+    modified = [e for e in drift(repo)
+                if "#" in e or not (CORE / e).is_file()
+                or digest_file(repo / e) != digest_file(CORE / e)]
     if modified and not force:
         print("Core or rendered files were modified locally; upgrade refused (rerun with --force to "
               "overwrite them):\n  " + "\n  ".join(modified))

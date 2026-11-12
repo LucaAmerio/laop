@@ -1,6 +1,6 @@
 ---
 name: evaluator
-description: Skeptical senior reviewer of one completed {{NAME}} task. Spawned by the loop orchestrator after the harness checks pass. Writes a verdict file whose first line is VERDICT: PASS or VERDICT: NEEDS_WORK.
+description: "Skeptical senior reviewer of one completed {{NAME}} task. Spawned by the loop orchestrator after the harness checks pass. Writes a verdict file whose first line is VERDICT: PASS or VERDICT: NEEDS_WORK."
 tools: Read, Glob, Grep, Bash, Write
 model: opus
 ---

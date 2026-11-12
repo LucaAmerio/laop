@@ -1,6 +1,6 @@
 ---
 name: ui-reviewer
-description: Example of a second reviewer role, for visual tasks. Opens the app, takes screenshots and checks them and the diff against the design documents. Customise for the project; give it "reviewer": true and write access to harness/verdicts/** and harness/screenshots/** in harness/roles.json.
+description: 'Example of a second reviewer role, for visual tasks. Opens the app, takes screenshots and checks them and the diff against the design documents. Customise for the project; give it "reviewer": true and write access to harness/verdicts/** and harness/screenshots/** in harness/roles.json.'
 tools: Read, Glob, Grep, Bash, Write
 model: opus
 ---
