@@ -715,10 +715,11 @@ function dispatchTime(id, d = data) {
 function phaseInfo(cur, d = data) {
   const p = cur.phase;
   const start = p === "dispatched" ? dispatchTime(cur.task_id, d) || (byId(cur.task_id, d)?.time || {}).open_since : p === "awaiting_review" ? cur.verify_time
-    : p === "resolving" ? cur.resolve_time : p === "challenging" ? cur.challenge_time : null;
+    : p === "resolving" ? cur.resolve_time : p === "challenging" ? cur.challenge_time : p === "checking" ? cur.checks_started : null;
   const hb = d.heartbeat, lock = d.step_lock_age;
   let who = { dispatched: cur.agent, awaiting_review: cur.reviewer, resolving: "resolver", challenging: "challenger" }[p] || "?";
-  let checking = false;
+  let checking = p === "checking";
+  if (checking) who = "checks (own process)";
   if (lock !== null && lock !== undefined && hb && /step_verify/.test(hb.command || "")) { checking = true; who = "step_verify (checks)"; }
   return { start, who, checking };
 }
@@ -1740,7 +1741,7 @@ function nowText(r, cls) {
   const cur = r.state.current;
   if (cur) {
     const t = byId(cur.task_id, r) || { id: cur.task_id, title: "" }, info = phaseInfo(cur, r);
-    const phase = { dispatched: "agent", awaiting_review: "review", resolving: "resolver", challenging: "challenger" }[cur.phase] || cur.phase;
+    const phase = { dispatched: "agent", awaiting_review: "review", resolving: "resolver", challenging: "challenger", checking: "checks" }[cur.phase] || cur.phase;
     return `<b>${esc(t.id)}</b> ${esc(clip(t.title, 70))} · ${esc(phase)}: <b>${esc(info.who)}</b>${info.start ? ` for <b data-since="${info.start}">${dur(nowS() - info.start)}</b>` : ""} · attempt ${cur.attempt ?? "?"}`;
   }
   let now = { running: "Between steps.", complete: "Every task is done.", halted: "Halted.", kill: "Emergency stop.", idle: "Not running." }[cls] || "";

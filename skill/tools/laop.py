@@ -234,8 +234,9 @@ def project_json(a: dict) -> dict:
         "interpreters": a["interpreters"],
         "hook_python": a.get("hook_python") or hook_python,
         "global_checks": a["global_checks"],
-        "check_timeout_min": 9,
-        "check_budget_min": 9.5,
+        "check_timeout_min": 30,
+        "check_budget_min": 40,
+        "check_warn_min": 9,
         "max_iterations": 100,
         "max_attempts_per_task": 3,
         "max_stops_without_progress": 2,
@@ -397,8 +398,22 @@ def upgrade(repo: Path, force: bool) -> int:
         (repo / rel).unlink(missing_ok=True)
     project_path = repo / "harness" / "project.json"
     project = load_project(repo)
+    rewrite = False
     if "loop_command" in project:
         project.pop("loop_command")
+        rewrite = True
+    if project.get("check_timeout_min") == 9 and project.get("check_budget_min") == 9.5:
+        # the values init wrote while the checks ran inside one Bash call (laop < 0.6): raised to
+        # the new defaults now that the checks run in a process of their own
+        project.update(check_timeout_min=30, check_budget_min=40)
+        project.setdefault("check_warn_min", 9)
+        rewrite = True
+        print("harness/project.json: check_timeout_min 9 -> 30, check_budget_min 9.5 -> 40 "
+              "(the checks no longer run inside one Bash call); check_warn_min 9")
+    elif "check_timeout_min" in project or "check_budget_min" in project:
+        print("harness/project.json: check_timeout_min/check_budget_min kept as set; since laop 0.6 "
+              "they are no longer capped by the 10-minute Bash call")
+    if rewrite:
         write_text(project_path, json.dumps(project, indent=2, ensure_ascii=False) + "\n")
     entries = new_core + render(repo)
     # the loop command used to be named after the project: drop the old rendered file

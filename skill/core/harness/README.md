@@ -20,6 +20,7 @@ scripts, in code.
     │                    writes current_prompt.md
     ├─ Agent(<task agent>)   fresh context, foreground; ends with commit + harness/claim.json
     ├─ step_verify.py    integrity, protected paths, claim, acceptance + global checks
+    │                    (run by checks.py in a process of their own; CHECKS RUNNING → run it again)
     │    ├─ REVIEW  ─► Agent(<reviewer>) ─► step_record.py   PASS → done, NEEDS_WORK → retry
     │    └─ RESOLVE ─► Agent(resolver) ─► step_resolve.py ─► Agent(challenger) ─► step_resolve.py
     │                     ANSWER + AGREE → provisional decision, task resumes; otherwise → owner
@@ -31,7 +32,7 @@ scripts, in code.
 
 | File | Class | Purpose |
 |---|---|---|
-| `harness/loop_config.py`, `loop_core.py`, `pathrules.py`, `statefile.py`, `step_*.py`, `*_hook.py`, `session_check.py`, `owner_tools.py`, `README.md` | core | Loop logic, rules engine, hooks, owner tools |
+| `harness/loop_config.py`, `loop_core.py`, `checks.py`, `pathrules.py`, `statefile.py`, `step_*.py`, `*_hook.py`, `session_check.py`, `owner_tools.py`, `README.md` | core | Loop logic, rules engine, hooks, owner tools |
 | `.claude/hooks/guard.py` | core | PreToolUse guard: kill switch, permissions per role, dispatch control |
 | `.claude/agents/resolver.md`, `challenger.md` | core | The resolution roles |
 | `.claude/commands/laop-start.md`, the `hooks` block of `.claude/settings.json` | rendered | Generated from the core and `project.json` |
@@ -119,7 +120,10 @@ reserved to the owner: neither the resolver nor the challenger approves these do
 - `agent`: a role with `"dispatch": true`, or `owner-gate`. Gates are never dispatched: when their dependencies are done they wait for the owner while the loop runs everything that does not depend on them; the loop stops (STOPPED) only when nothing else can run. A gate with `"final": true` cannot be passed while provisional decisions are open.
 - `reviewer`: a role with `"reviewer": true` (default `evaluator`); `review: false` skips the review.
 - `acceptance`: `pytest` checks pass only with exit code 0 and at least `min_passed` passing tests (skipped tests do not count; `allow_empty` accepts "no tests collected"; `interpreter` picks another key of `interpreters`); `cmd` checks pass on exit code 0. In `cmd`, every argument equal to a key of `interpreters` (`python`, `node`...) is replaced by the configured interpreter, in the agent's prompt too.
-- The global checks of `project.json` run after every task; acceptance checks select the task's own tests. All checks of a task share the time budget `check_budget_min` (the Bash tool caps a call at 10 minutes).
+- The global checks of `project.json` run after every task; acceptance checks select the task's own tests. All checks of a task share the time budget `check_budget_min` (default 40), each at most `check_timeout_min` (default 30); a timeout kills the check's whole process tree.
+- Long checks: a Bash call lasts at most 10 minutes, so `step_verify` never runs the checks itself. It starts them in a detached process (`harness/checks.py`, record `harness/logs/checks/run.json`, phase `checking`) and waits at most `check_wait_min` (default 8, at most 8.5) per call; while they run it prints `CHECKS RUNNING` and names itself as the NEXT ACTION. Fast checks finish within the first call, as before.
+- Interruptions: the runner survives the end of the Bash call and of the Claude Code session, and keeps a heartbeat. Whoever runs `step_verify` next (directly, or via `step_next`, which routes the `checking` phase there) takes a finished result if HEAD did not move; otherwise, and when the runner is gone (session, machine or process stopped) or crashed, the checks start again from scratch, not counted as an attempt. After `check_restarts` (default 2) restarts without a result the task is blocked (`harness`) and the loop halts.
+- Checks longer than `check_warn_min` (default 9) are logged as slow, with one notification per run of the loop: the suite is growing.
 
 ## Claims
 

@@ -3,6 +3,9 @@
 Run by the orchestrator as: python harness/step_verify.py
 Checks integrity, protected paths and the claim, then runs the global and acceptance checks.
 Asks for a review, or, for a question the resolver may answer, for a resolution.
+
+The checks run in a process of their own (checks.py): this script waits for them at most
+check_wait_min per call and prints CHECKS RUNNING, with itself as the NEXT ACTION, while they run.
 """
 
 from __future__ import annotations
@@ -11,8 +14,11 @@ import sys
 import time
 from pathlib import Path
 
+STARTED = time.time()
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import checks  # noqa: E402
 import loop_config as C  # noqa: E402
 import loop_core as L  # noqa: E402
 import pathrules  # noqa: E402
@@ -25,6 +31,8 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     if refused:
         return refused
     current = state["current"]
+    if current and current["phase"] == "checking":  # checks started by an earlier call
+        return wait_checks(doc, state)
     if not current or current["phase"] != "dispatched":
         return f"NOTHING TO VERIFY.\n{NEXT}"
     task = L.task_by_id(doc, current["task_id"])
@@ -125,8 +133,6 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
     state["empty_runs"] = 0
     if valid:  # kept for a later reverify: claim.json is deleted at the next dispatch
         L.remember_claim(state, task["id"], claim, current["attempt"])
-    via = " (owner reverify)" if current.get("reverify") else ""
-
     if not valid:
         L.fail_attempt(doc, state, task, "No valid harness/claim.json for this task was written. "
                        "End every session with a claim (see CLAUDE.md).")
@@ -141,17 +147,114 @@ def run(doc: dict, state: dict, digest_at_load: str) -> str:
         L.fail_attempt(doc, state, task, "Uncommitted changes left in the working tree: "
                        f"{task_dirty()[:10]}. Commit your work before claiming review.")
     else:
-        ok, report = L.run_checks(task, current["attempt"])
-        if not ok:
-            L.fail_attempt(doc, state, task, f"Harness checks failed{via}.\n\n" + report)
-        elif task.get("review", True):
-            return request_review(doc, state, task, base, excluded, sorted(owner_files))
-        else:
-            L.mark_done(state, task, "checks passed, review not required")
-    outcome = st["status"]
+        return start_checks(doc, state, task, sorted(owner_files))
+    return record(doc, state, task)
+
+
+def record(doc: dict, state: dict, task: dict) -> str:
+    outcome = state["tasks"][task["id"]]["status"]
     state["current"] = None
     L.save_state(doc, state)
     return f"RECORDED: {task['id']} is now '{outcome}'.\n{NEXT}"
+
+
+# --------------------------------------------------------------------------- checks
+
+
+def start_checks(doc: dict, state: dict, task: dict, owner_files: list[str]) -> str:
+    """Start the checks in their own process (harness/checks.py) and wait for them."""
+    current = state["current"]
+    run_id = checks.start(task, current["attempt"])
+    current.update(phase="checking", checks_run=run_id, checks_restarts=0, checks_waits=0,
+                   checks_owner_files=owner_files, checks_started=time.time())
+    L.event(state, f"{task['id']} checks started (run {run_id})")
+    L.save_state(doc, state)
+    return wait_checks(doc, state)
+
+
+def run_problem(rec: dict, run_id: str) -> str:
+    """Why the run ``run_id`` must be started again, or "" while it runs or once it is usable."""
+    if rec.get("run_id") != run_id:
+        return "its record is missing or belongs to another run"
+    if rec["status"] == "done":
+        return "" if rec["head"] == L.head_sha() else "HEAD moved while the checks ran"
+    if rec["status"] == "crashed":
+        last = (rec.get("error") or "").strip().splitlines()
+        return "the check runner crashed: " + (last[-1] if last else "no error recorded")
+    if checks.alive(rec):
+        return ""
+    time.sleep(3)  # a machine waking up: give the heartbeat a chance before declaring it gone
+    rec = checks.read()
+    if rec.get("run_id") == run_id and (rec["status"] == "done" or checks.alive(rec)):
+        return ""
+    return "the check runner is gone (the session, the machine or the process stopped)"
+
+
+def wait_checks(doc: dict, state: dict) -> str:
+    """Wait for the check run of the task in flight, at most check_wait_min in this call."""
+    current = state["current"]
+    task = L.task_by_id(doc, current["task_id"])
+    deadline = STARTED + C.CHECK_WAIT_MIN * 60
+    while True:
+        rec = checks.read()
+        problem = run_problem(rec, current["checks_run"])
+        if problem:
+            current["checks_restarts"] = current.get("checks_restarts", 0) + 1
+            if current["checks_restarts"] > C.CHECK_RESTARTS:
+                checks.stop(rec)
+                st = state["tasks"][task["id"]]
+                st.update(status="blocked", block_type="harness",
+                          blocked_reason=f"checks started {current['checks_restarts']} times without a result; "
+                                         f"last: {problem}")
+                state["current"] = None
+                return L.halt(doc, state, f"{task['id']}: the checks were started "
+                                          f"{current['checks_restarts']} times without a result ({problem}); "
+                                          "harness/logs/checks/runner.log may say why")
+            run_id = checks.start(task, current["attempt"])
+            L.event(state, f"{task['id']} checks started again (run {run_id}): {problem}")
+            current["checks_run"] = run_id
+            L.save_state(doc, state)
+            continue
+        if rec["status"] == "done":
+            return finish_checks(doc, state, task, rec)
+        if time.time() >= deadline:
+            break
+        time.sleep(max(0.05, min(2.0, deadline - time.time())))
+    current["checks_waits"] = current.get("checks_waits", 0) + 1  # progress for the stop hook
+    L.save_state(doc, state)
+    elapsed = (time.time() - (rec.get("started") or rec["created"])) / 60
+    return (f"CHECKS RUNNING: {task['id']}: {len(rec.get('reports', []))} of {rec['n_checks']} checks done "
+            f"after {elapsed:.1f} min (budget {C.CHECK_BUDGET_MIN:g} min). They run in a process of their "
+            "own; this script waits for them in slices shorter than a Bash call.\n"
+            "NEXT ACTION: run python harness/step_verify.py")
+
+
+def finish_checks(doc: dict, state: dict, task: dict, rec: dict) -> str:
+    current = state["current"]
+    st = state["tasks"][task["id"]]
+    base = st["base_sha"]
+    owner_files = current.get("checks_owner_files", [])
+    for key in ("checks_run", "checks_restarts", "checks_waits", "checks_owner_files", "checks_started"):
+        current.pop(key, None)
+    current["phase"] = "dispatched"
+    minutes = (rec.get("finished", time.time()) - (rec.get("started") or rec["created"])) / 60
+    L.event(state, f"{task['id']} checks {'passed' if rec['all_ok'] else 'failed'} in {minutes:.1f} min")
+    if minutes > C.CHECK_WARN_MIN:
+        L.event(state, f"slow checks: {task['id']} took {minutes:.1f} min (check_warn_min {C.CHECK_WARN_MIN:g})")
+        if not state.get("slow_checks_warned"):
+            state["slow_checks_warned"] = True
+            L.notify("slow checks", f"The checks of {task['id']} took {minutes:.1f} min, more than "
+                     f"check_warn_min ({C.CHECK_WARN_MIN:g} min). The loop goes on; the test suite is "
+                     "growing. Notified once per run of the loop.")
+    via = " (owner reverify)" if current.get("reverify") else ""
+    if not rec["all_ok"]:
+        L.fail_attempt(doc, state, task, f"Harness checks failed{via}.\n\n" + rec["report"])
+    elif task.get("review", True):
+        excluded = L.excluded_commits(state, task["id"], base)
+        return request_review(doc, state, task, base, excluded, owner_files)
+    else:
+        L.mark_done(state, task, "checks passed, review not required")
+    return record(doc, state, task)
 
 
 def record_pause(doc: dict, state: dict, task: dict, claim: dict, base: str, excluded: list[str],

@@ -1,5 +1,36 @@
 # laop changelog
 
+## 0.6.0 (2026-11-12)
+
+The checks no longer run inside one Bash call, so they are no longer capped at 10 minutes (Talos
+and Argus: suites past 9 minutes failed attempts with `timeout`).
+
+- `step_verify` starts the checks in a detached process (new core file `harness/checks.py`,
+  record `harness/logs/checks/run.json`, new phase `checking`) and waits at most `check_wait_min`
+  (default 8, capped at 8.5) per call. While they run it prints `CHECKS RUNNING` with itself as
+  the NEXT ACTION; fast checks finish within the first call, as before. `step_next` routes the
+  `checking` phase to `step_verify`.
+- Recovery: the runner survives the end of the Bash call and of the Claude Code session (own
+  process group, no window, out of the job object when allowed) and keeps a heartbeat. The next
+  `step_verify` takes a finished result if HEAD did not move; a run whose process is gone, that
+  crashed, or that ran on another HEAD is started again, not counted as an attempt. After
+  `check_restarts` (default 2) restarts without a result the task is blocked (`harness`) and the
+  loop halts.
+- A check that times out has its whole process tree killed (`taskkill /T` on Windows, the process
+  group elsewhere), not only its first process. Check output goes to
+  `harness/logs/check_<task>_<attempt>_<i>.out`.
+- New defaults: `check_timeout_min` 30 (was 9), `check_budget_min` 40 (was 9.5); new keys
+  `check_wait_min` 8, `check_warn_min` 9 (checks longer than this are logged as slow, with one
+  notification per run of the loop: the suite is growing), `check_restarts` 2. `upgrade` raises
+  the values init used to write (9 and 9.5) to 30 and 40 and adds `check_warn_min`; other values
+  are kept.
+- The loop command tells the orchestrator to run `step_verify` again on `CHECKS RUNNING`, never in
+  the background or with `sleep`. Run `upgrade` to re-render it.
+- The viewer shows the `checking` phase.
+- Templates (new projects only; existing projects edit their own copies if they want it): the
+  builder runs targeted tests when a suite does not fit in one Bash call and leaves the full
+  suites to the harness (`CLAUDE.md` session routine, `agents/builder.md`).
+
 ## 0.5.3 (2026-11-06)
 
 - The guard's block log (`harness/logs/guard_blocks.jsonl`) says who made a blocked call and what

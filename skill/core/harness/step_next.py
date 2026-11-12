@@ -58,6 +58,10 @@ def run(doc: dict, state: dict) -> str:
         if phase == "dispatched" and current.get("reverify"):
             return (f"PENDING: the owner reverify of task {current['task_id']} is not verified yet.\n"
                     "NEXT ACTION: run python harness/step_verify.py")
+        if phase == "checking":
+            return (f"PENDING: the checks of task {current['task_id']} were started and are not "
+                    "recorded yet; step_verify takes their result, waits for them, or starts them "
+                    "again if their process is gone.\nNEXT ACTION: run python harness/step_verify.py")
         if phase == "dispatched":
             return (f"PENDING: task {current['task_id']} was dispatched to '{current['agent']}' "
                     "but not verified yet. If the subagent never ran or left nothing, step_verify "
@@ -125,6 +129,7 @@ def run(doc: dict, state: dict) -> str:
 
     if starting:
         state["iterations"] = 0  # the cap counts the dispatches of this run, not of the milestone
+        state.pop("slow_checks_warned", None)  # one slow-checks notification per run
     if state["iterations"] >= C.MAX_ITERATIONS:
         state["loop_active"] = False
         L.notify("iteration cap reached", f"Stopped after {state['iterations']} dispatches.")

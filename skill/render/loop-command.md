@@ -8,7 +8,7 @@ Repeat until a script prints LOOP FINISHED, HALTED, STOPPED or REFUSED:
 
 1. Run `python harness/step_next.py`.
 2. Do exactly what its NEXT ACTION line says. It is always one of:
-   - run another step script (`python harness/step_verify.py`, `step_record.py`, `step_resolve.py`, or `step_next.py`); give `step_verify.py` the maximum Bash timeout, 600000 ms, because it runs the test suites;
+   - run another step script (`python harness/step_verify.py`, `step_record.py`, `step_resolve.py`, or `step_next.py`); give `step_verify.py` the maximum Bash timeout, 600000 ms, because it waits for the test suites (they run in a process of their own; while they run it prints CHECKS RUNNING and names itself as the NEXT ACTION: run it again, at once, as many times as it asks; never in the background, never with `sleep`);
    - read the named prompt file and spawn the named subagent with the Agent tool (`subagent_type` = the name given, in the foreground: `run_in_background` = false if the tool has that parameter), passing the file's full content as the prompt, verbatim: nothing added, nothing removed. Wait for it to return, then run the script the NEXT ACTION names.
 3. Repeat with the NEXT ACTION of the script you just ran.
 

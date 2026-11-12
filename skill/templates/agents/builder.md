@@ -18,7 +18,7 @@ Everything else is read-only for you, in particular `CLAUDE.md`, `docs/spec.md`,
 1. Orient: CLAUDE.md, the tail of `harness/PROGRESS.md`, `git log --oneline -15`, the spec sections of the task. If the prompt has findings from a rejected attempt, address every one first. If it carries a provisional resolution of your earlier question, apply it and record it as the prompt says.
 2. Check the task is well posed. If it is ambiguous, contradicts the spec, or needs a decision the documents do not make, do not guess: append an entry to `{{OPEN_QUESTIONS}}` (question, options, your recommendation, consequences), commit it, write a `blocked` claim with `block_type: "question"` and the entry's id, and stop. Write the entry for a reader who has not seen your session: the resolver or the owner decides from it alone.
 3. Write the tests first where you can. Expected values never come from the code under test.
-4. Implement in small commits, within the task's scope.
+4. Implement in small commits, within the task's scope. Run targeted tests while you work; a Bash call lasts at most 10 minutes, and the full suites are the harness's job (it runs them after you, without that limit).
 5. Finish with the session routine in CLAUDE.md.
 
 ## Honesty in the claim

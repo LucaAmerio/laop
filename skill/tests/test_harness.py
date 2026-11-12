@@ -818,6 +818,146 @@ class LoopTests(HarnessTest):
         self.assertNotIn("src/c.py", out)
 
 
+# ============================================================================ checks in their own process
+
+
+def counting_check(counter: Path, first_sleep: float, later_sleep: float = 0) -> dict:
+    """A cmd check that appends a line to ``counter`` (one per run) and sleeps ``first_sleep``
+    seconds on its first run, ``later_sleep`` on the next ones."""
+    code = (f"import pathlib, time\np = pathlib.Path(r'{counter}')\n"
+            "n = len(p.read_text().splitlines()) if p.exists() else 0\n"
+            "with p.open('a') as fh:\n    fh.write('x\\n')\n"
+            f"time.sleep({first_sleep} if n == 0 else {later_sleep})\n")
+    return {"cmd": ["python", "-c", code]}
+
+
+def kill_tree(pid: int) -> None:
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+    else:
+        import signal
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            pass
+
+
+class CheckRunTests(HarnessTest):
+    """The checks run detached (harness/checks.py); step_verify waits in slices and resumes."""
+
+    def setUp(self):
+        super().setUp()
+        self.counter = self.r.tmp / "runs.txt"
+        self.record = self.r.root / "harness" / "logs" / "checks" / "run.json"
+
+    def tearDown(self):
+        rec = self.run_record()
+        if rec.get("pid"):
+            kill_tree(rec["pid"])
+        super().tearDown()
+
+    def run_record(self) -> dict:
+        try:
+            return json.loads(self.record.read_text())
+        except (OSError, ValueError):
+            return {}
+
+    def runs(self) -> int:
+        return len(self.counter.read_text().splitlines()) if self.counter.exists() else 0
+
+    def until(self, cond, timeout: float = 60) -> None:
+        end = time.time() + timeout
+        while not cond():
+            self.assertLess(time.time(), end, "timed out")
+            time.sleep(0.2)
+
+    def start(self, check: dict, **project) -> str:
+        r = self.r
+        pj = json.loads((r.root / "harness" / "project.json").read_text())
+        pj.update({"check_wait_min": 0.02, **project})  # slices of 1.2 s
+        r.commit_file("harness/project.json", json.dumps(pj), "config")
+        r.tasks([task(acceptance=[check])])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n", "M1-001: b")
+        r.claim("M1-001")
+        return r.step("step_verify")
+
+    def verify_until_done(self, max_calls: int = 40) -> str:
+        for _ in range(max_calls):
+            out = self.r.step("step_verify")
+            if "CHECKS RUNNING" not in out:
+                return out
+        self.fail("the checks never finished")
+
+    def test_fast_checks_finish_in_one_call(self):
+        out = self.start(counting_check(self.counter, 0), check_wait_min=8)
+        self.assertIn("REVIEW", out)
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(self.run_record()["status"], "done")
+
+    def test_result_of_a_run_nobody_waited_for_is_used(self):
+        # Claude Code (or the orchestrator's turn) ended while the checks ran: they finish alone
+        out = self.start(counting_check(self.counter, 4))
+        self.assertIn("CHECKS RUNNING", out)
+        self.assertIn("NEXT ACTION: run python harness/step_verify.py", out)
+        self.assertEqual(self.r.state()["current"]["phase"], "checking")
+        out = self.r.step("step_next")
+        self.assertIn("PENDING", out)
+        self.assertIn("step_verify", out)
+        self.until(lambda: self.run_record().get("status") == "done")
+        self.assertIn("REVIEW", self.r.step("step_verify"))
+        self.assertEqual(self.runs(), 1)
+        self.assertNotIn("checks_run", self.r.state()["current"])
+
+    def test_gone_runner_is_started_again_not_an_attempt(self):
+        out = self.start(counting_check(self.counter, 120))
+        self.assertIn("CHECKS RUNNING", out)
+        self.until(lambda: self.run_record().get("pid") and self.runs() == 1)
+        kill_tree(self.run_record()["pid"])
+        out = self.verify_until_done()
+        self.assertIn("REVIEW", out)
+        self.assertEqual(self.runs(), 2)
+        state = self.r.state()
+        self.assertEqual(state["tasks"]["M1-001"]["attempts"], 0)
+        self.assertTrue(any("checks started again" in e and "gone" in e for e in state["events"]))
+
+    def test_failed_checks_count_as_an_attempt(self):
+        out = self.start({"cmd": ["python", "-c", "import sys, time; time.sleep(3); sys.exit(1)"]})
+        self.assertIn("CHECKS RUNNING", out)
+        out = self.verify_until_done()
+        self.assertIn("is now 'todo'", out)
+        self.assertEqual(self.r.state()["tasks"]["M1-001"]["attempts"], 1)
+        self.assertIsNone(self.r.state()["current"])
+
+    def test_head_moved_starts_the_checks_again(self):
+        out = self.start(counting_check(self.counter, 3))
+        self.assertIn("CHECKS RUNNING", out)
+        self.r.commit_file("src/c.py", "C = 3\n", "M1-001: c")
+        self.until(lambda: self.run_record().get("status") == "done")
+        out = self.verify_until_done()
+        self.assertIn("REVIEW", out)
+        self.assertEqual(self.runs(), 2)
+        self.assertTrue(any("HEAD moved" in e for e in self.r.state()["events"]))
+
+    def test_restart_cap_blocks_the_task_and_halts(self):
+        out = self.start(counting_check(self.counter, 120), check_restarts=0)
+        self.assertIn("CHECKS RUNNING", out)
+        self.until(lambda: self.run_record().get("pid") and self.runs() == 1)
+        kill_tree(self.run_record()["pid"])
+        out = self.r.step("step_verify")
+        self.assertIn("HALTED", out)
+        st = self.r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["status"], "blocked")
+        self.assertEqual(st["block_type"], "harness")
+        self.assertEqual(self.runs(), 1)
+
+    def test_slow_checks_are_reported(self):
+        out = self.start(counting_check(self.counter, 2), check_wait_min=8, check_warn_min=0.01)
+        self.assertIn("REVIEW", out)
+        self.assertTrue(any(e.split("  ", 1)[1].startswith("slow checks") for e in self.r.state()["events"]))
+        self.assertTrue(self.r.state().get("slow_checks_warned"))
+
+
 # ============================================================================ owner reverify
 
 

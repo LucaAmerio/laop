@@ -989,56 +989,89 @@ def junit_counts(path: Path) -> tuple[int, int, int, int]:
     return tuple(totals)  # type: ignore[return-value]
 
 
-def run_checks(task: dict, attempt: int) -> tuple[bool, str]:
-    """Run the global and acceptance checks within the time budget (CHECK_BUDGET_MIN): a check
-    that cannot start or finish within the remaining budget fails the attempt."""
+def kill_tree(pid: int) -> None:
+    """Kill a process and every process it started (pytest-xdist workers, shells...)."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=60)
+        else:
+            import signal
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def run_command(cmd: list[str], timeout: float, out_file: Path) -> tuple[int | None, str]:
+    """Run ``cmd`` in the repository with its output in ``out_file``; return (exit code, output).
+    On timeout the whole process tree is killed and the exit code is None."""
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+             else {"start_new_session": True})
+    with open(out_file, "wb") as fh:
+        proc = subprocess.Popen(cmd, cwd=REPO, stdin=subprocess.DEVNULL, stdout=fh, stderr=subprocess.STDOUT,
+                                **group)
+        try:
+            code = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            code = None
+    return code, out_file.read_bytes().decode("utf-8", "replace")
+
+
+def run_checks(task: dict, attempt: int, started: float | None = None,
+               on_report=None) -> tuple[bool, str]:
+    """Run the global and acceptance checks within the time budget (CHECK_BUDGET_MIN, counted in
+    wall-clock time from ``started``): a check that cannot start or finish within the remaining
+    budget fails the attempt. ``on_report(i, ok, report)`` is called after each check."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     reports, all_ok = [], True
-    deadline = time.monotonic() + C.CHECK_BUDGET_MIN * 60
+    deadline = (started or time.time()) + C.CHECK_BUDGET_MIN * 60
     for i, check in enumerate(C.GLOBAL_CHECKS + task["acceptance"]):
-        remaining = deadline - time.monotonic()
+        remaining = deadline - time.time()
         timeout = min(C.CHECK_TIMEOUT_MIN * 60, remaining)
         out = ""
         if timeout <= 5:
             ok, detail = False, (f"not run: the time budget of {C.CHECK_BUDGET_MIN} min for all the "
                                  "checks of a task is exhausted (harness/project.json, check_budget_min)")
-            reports.append(f"### [FAIL] {json.dumps(check)}\n{detail}\n")
-            all_ok = False
-            continue
-        try:
-            if "pytest" in check:
-                junit = LOG_DIR / f"junit_{task['id']}_{attempt}_{i}.xml"
-                junit.unlink(missing_ok=True)
-                python = C.INTERPRETERS.get(check.get("interpreter", "python"), C.PYTHON)
-                cmd = [python, "-m", "pytest", *check["pytest"], "-q", f"--junitxml={junit}"]
-                proc = subprocess.run(cmd, cwd=REPO, capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace", timeout=timeout)
-                out = proc.stdout + proc.stderr
-                if proc.returncode == 5 and check.get("allow_empty"):
-                    ok, detail = True, "no tests collected (allowed)"
-                elif not junit.exists():
-                    ok, detail = False, f"pytest exit code {proc.returncode}, no junit report"
+        else:
+            out_file = LOG_DIR / f"check_{task['id']}_{attempt}_{i}.out"
+            try:
+                if "pytest" in check:
+                    junit = LOG_DIR / f"junit_{task['id']}_{attempt}_{i}.xml"
+                    junit.unlink(missing_ok=True)
+                    python = C.INTERPRETERS.get(check.get("interpreter", "python"), C.PYTHON)
+                    cmd = [python, "-m", "pytest", *check["pytest"], "-q", f"--junitxml={junit}"]
+                    code, out = run_command(cmd, timeout, out_file)
+                    if code is None:
+                        ok, detail = False, f"timeout after {timeout / 60:.1f} min"
+                    elif code == 5 and check.get("allow_empty"):
+                        ok, detail = True, "no tests collected (allowed)"
+                    elif not junit.exists():
+                        ok, detail = False, f"pytest exit code {code}, no junit report"
+                    else:
+                        tests, failures, errors, skipped = junit_counts(junit)
+                        passed = tests - failures - errors - skipped
+                        need = check.get("min_passed", 1)
+                        ok = code == 0 and passed >= need
+                        detail = (f"passed={passed} (min {need}), failures={failures}, errors={errors}, "
+                                  f"skipped={skipped}, exit={code}")
+                elif "cmd" in check:
+                    code, out = run_command(shown_check(check)["cmd"], timeout, out_file)
+                    ok = code == 0
+                    detail = f"timeout after {timeout / 60:.1f} min" if code is None else f"exit={code}"
                 else:
-                    tests, failures, errors, skipped = junit_counts(junit)
-                    passed = tests - failures - errors - skipped
-                    need = check.get("min_passed", 1)
-                    ok = proc.returncode == 0 and passed >= need
-                    detail = (f"passed={passed} (min {need}), failures={failures}, errors={errors}, "
-                              f"skipped={skipped}, exit={proc.returncode}")
-            elif "cmd" in check:
-                proc = subprocess.run(shown_check(check)["cmd"], cwd=REPO, capture_output=True, text=True,
-                                      encoding="utf-8", errors="replace", timeout=timeout)
-                out = proc.stdout + proc.stderr
-                ok, detail = proc.returncode == 0, f"exit={proc.returncode}"
-            else:
-                ok, detail = False, "unknown check type (use 'pytest' or 'cmd')"
-        except subprocess.TimeoutExpired:
-            ok, detail = False, f"timeout after {timeout / 60:.1f} min"
-        except FileNotFoundError as exc:
-            ok, detail = False, f"cannot run check: {exc}"
+                    ok, detail = False, "unknown check type (use 'pytest' or 'cmd')"
+            except (FileNotFoundError, PermissionError) as exc:
+                ok, detail = False, f"cannot run check: {exc}"
         all_ok &= ok
-        body = "" if ok else f"```\n{tail(out)}\n```\n"
-        reports.append(f"### [{'OK' if ok else 'FAIL'}] {json.dumps(check)}\n{detail}\n{body}")
+        body = "" if ok or not out else f"```\n{tail(out)}\n```\n"
+        report = f"### [{'OK' if ok else 'FAIL'}] {json.dumps(check)}\n{detail}\n{body}"
+        reports.append(report)
+        if on_report:
+            on_report(i, ok, report)
     return all_ok, "\n".join(reports)
 
 

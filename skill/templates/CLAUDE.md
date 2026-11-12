@@ -38,7 +38,7 @@ This file belongs to the owner. Agents never edit it; they propose changes in th
 Start: read this file, the tail of `harness/PROGRESS.md`, `git log --oneline -15`, your task in the prompt, and any findings from a rejected attempt.
 
 End:
-1. Run your task's acceptance checks and the global checks listed in your prompt.
+1. Run your task's acceptance checks and the global checks listed in your prompt. A Bash call lasts at most 10 minutes: if a suite does not fit in one call, run the part your change touches (the affected test files, `-x`, a `-k` selection) and say so in the claim. The harness runs every check in full after you, with no such limit. Never run a test suite in the background.
 2. Commit with a message starting with the task id (`M1-004: ...`). Leave the working tree clean.
 3. Append a short entry to `harness/PROGRESS.md` (done, deliberately left out, to review) and commit it.
 4. Write `harness/claim.json` (not committed):

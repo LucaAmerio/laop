@@ -26,8 +26,16 @@ DEFAULTS: dict = {
     },
     "hook_python": ["py", "-3"],
     "global_checks": [],
-    "check_timeout_min": 9,
-    "check_budget_min": 9.5,
+    # The checks run in a process of their own (harness/checks.py): no longer bound by the
+    # 10-minute cap of a Bash call. step_verify waits for them in slices of check_wait_min.
+    "check_timeout_min": 30,
+    "check_budget_min": 40,
+    "check_wait_min": 8,
+    # Checks lasting longer than this are reported as slow (event; one notification per run).
+    "check_warn_min": 9,
+    # Restarts of a check run whose process disappeared (session or machine stopped) before the
+    # task is blocked and the loop halted.
+    "check_restarts": 2,
     "max_iterations": 100,
     "max_attempts_per_task": 3,
     "max_stops_without_progress": 2,
@@ -104,6 +112,10 @@ PYTHON: str = INTERPRETERS.get("python", sys.executable)
 GLOBAL_CHECKS: list[dict] = P["global_checks"]
 CHECK_TIMEOUT_MIN: float = P["check_timeout_min"]
 CHECK_BUDGET_MIN: float = P["check_budget_min"]
+#: At most 8.5 min: a wait slice plus the work around it must stay within one Bash call.
+CHECK_WAIT_MIN: float = min(float(P["check_wait_min"]), 8.5)
+CHECK_WARN_MIN: float = P["check_warn_min"]
+CHECK_RESTARTS: int = int(P["check_restarts"])
 MAX_ITERATIONS: int = P["max_iterations"]
 MAX_ATTEMPTS_PER_TASK: int = P["max_attempts_per_task"]
 MAX_STOPS_WITHOUT_PROGRESS: int = P["max_stops_without_progress"]
