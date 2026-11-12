@@ -131,7 +131,7 @@ In the repository you want to build, in Claude Code:
    `http://127.0.0.1:8765`; add the repository with the "+" tab).
 
 Other modes: `/laop upgrade` (new harness version), `/laop add-role`, `/laop doctor` (is the guard
-active?), backtest of a past milestone.
+active?), backtest (measure the resolver on questions you have already decided).
 
 ## Owner controls
 
