@@ -1,5 +1,17 @@
 # laop changelog
 
+## 0.6.2 (2026-11-21)
+
+A gate given new tasks after it was reached is no longer shown as waiting for the owner (Argus:
+M2-G2 was reached, the owner added M2-025 to M2-033 in front of it instead of passing it, and it
+stayed "awaiting the owner" in `STATUS.md` and in the monitor's Status and Graph views).
+
+- `step_next` sends back to `todo` a gate in `awaiting_owner` whose dependencies are no longer all
+  done (tasks added in front of it, a dependency unblocked or sent to reverify), with the event
+  `gate <id> no longer reachable: waits on ...`. It is announced again when it is reached.
+- The monitor decides whether a gate is open from its dependencies only, not from the stored
+  status, which stays `awaiting_owner` until the next step script runs.
+
 ## 0.6.1 (2026-11-12)
 
 Agent frontmatter is strict YAML (Argus: `upgrade` to 0.6.0 refused because the owner had quoted

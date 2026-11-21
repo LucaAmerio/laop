@@ -360,10 +360,16 @@ def next_task(doc: dict, state: dict) -> dict | None:
 
 
 def open_gates(doc: dict, state: dict) -> list[dict]:
-    """Gates whose dependencies are done and that the owner has not passed yet."""
+    """Gates whose dependencies are done and that the owner has not passed yet. A gate reached
+    before and no longer reachable (tasks added in front of it, a dependency sent back to todo)
+    goes back to todo."""
     gates = []
     for t in doc["tasks"]:
         st = state["tasks"][t["id"]]
+        if t["agent"] == GATE and st["status"] == "awaiting_owner" and not _deps_done(t, state):
+            st["status"] = "todo"
+            waits = [d for d in t.get("depends_on", []) if state["tasks"][d]["status"] != "done"]
+            event(state, f"gate {t['id']} no longer reachable: waits on {', '.join(waits)}")
         if t["agent"] == GATE and st["status"] != "done" and _deps_done(t, state):
             if st["status"] != "awaiting_owner":
                 st["status"] = "awaiting_owner"

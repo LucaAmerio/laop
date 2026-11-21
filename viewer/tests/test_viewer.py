@@ -301,6 +301,23 @@ class DecisionsTest(unittest.TestCase):
         self.assertNotIn("resolver", items["provisional", "Q0"])  # its file is missing: nothing invented
         self.assertNotIn("decisions", self.v.summary())
 
+    def test_gate_with_undone_dependency_is_not_open(self):
+        """Argus M2-G2: state.json still says awaiting_owner after tasks were added in front of
+        the gate; the viewer listed it as waiting for the owner."""
+        path = self.repo.root / "harness" / "state.json"
+        before = path.read_text(encoding="utf-8")
+        try:
+            st = json.loads(before)
+            st["tasks"]["T1"] = {"status": "todo", "attempts": 0}
+            st["tasks"]["G1"] = {"status": "awaiting_owner", "attempts": 0}
+            path.write_text(json.dumps(st), encoding="utf-8")
+            snap = self.viewer.Repo(self.repo.root).snapshot()
+            self.assertNotIn(("gate", "G1"), {(d["kind"], d["id"]) for d in snap["decisions"]})
+            g1 = next(t for t in snap["tasks"] if t["id"] == "G1")
+            self.assertEqual(g1["waiting_on"], ["T1"])
+        finally:
+            path.write_text(before, encoding="utf-8")
+
     def test_questions_file_entries_open_and_closed(self):
         text = ("# Open questions\n\nIntro.\n\n## Q1: Endpoint\n\n- Status: decided\n- Raised by: planner\n"
                 "- Blocks: T1\n\n**Question.** Which one?\n\n**Decision.** (a), owner.\n\n"

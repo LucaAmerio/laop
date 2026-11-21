@@ -691,7 +691,9 @@ function parseEvent(e) {
 function kindOf(t, d = data) {
   const s = t.st.status, cur = d.state.current;
   if (s === "done") return "done";
-  if (t.gate) return s === "awaiting_owner" || !t.waiting_on.length ? "gate-open" : "gate-wait";
+  // from the dependencies, not the stored status: a gate reached and then given new tasks keeps
+  // "awaiting_owner" in state.json until the next step script, but is no longer reachable
+  if (t.gate) return t.waiting_on.length ? "gate-wait" : "gate-open";
   if (s === "blocked") return "blocked-" + (["question", "owner_action", "harness"].includes(t.st.block_type) ? t.st.block_type : "question");
   if (s === "in_progress") return cur && cur.task_id === t.id ? "running" : "interrupted";
   return t.waiting_on.length ? "waiting" : "ready";

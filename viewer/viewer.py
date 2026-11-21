@@ -577,7 +577,9 @@ def decision_items(tasks: list[dict], state: dict, read_resolution) -> list[dict
     out = []
     for t in tasks:
         s = t["st"].get("status", "todo")
-        if t["gate"] and s != "done" and (s == "awaiting_owner" or not t["waiting_on"]):
+        # a gate whose dependencies are not all done is not reachable, whatever state.json says
+        # (it keeps "awaiting_owner" after tasks were added in front of it, until the next step)
+        if t["gate"] and s != "done" and not t["waiting_on"]:
             out.append({"kind": "gate", "id": t["id"], "task": t["id"], "title": t.get("title", ""),
                         "description": t.get("description", ""), "final": bool(t.get("final")),
                         "depends_on": t.get("depends_on", []), "holds_up": t["holds_up"]})

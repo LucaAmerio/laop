@@ -558,6 +558,23 @@ class LoopTests(HarnessTest):
         r.claim("M1-001")
         self.assertIn("HALTED", r.step("step_verify"))
 
+    def test_gate_given_new_tasks_is_no_longer_awaiting(self):
+        """Argus M2-G2: reached, then tasks were added in front of it instead of passing it; the
+        gate stayed 'awaiting_owner' and was listed as waiting for the owner."""
+        r = self.r
+        r.tasks([{"id": "G1", "title": "g", "agent": "owner-gate", "description": "x"}])
+        self.assertIn("STOPPED", r.step("step_next"))
+        self.assertEqual(r.state()["tasks"]["G1"]["status"], "awaiting_owner")
+        r.tasks([task(), {"id": "G1", "title": "g", "agent": "owner-gate", "description": "x",
+                          "depends_on": ["M1-001"]}])
+        out = r.step("step_next")
+        self.assertIn("M1-001", out)
+        state = r.state()
+        self.assertEqual(state["tasks"]["G1"]["status"], "todo")
+        self.assertTrue(any("G1 no longer reachable: waits on M1-001" in e for e in state["events"]))
+        status = (r.root / "harness" / "STATUS.md").read_text(encoding="utf-8")
+        self.assertIn("## Gates awaiting the owner\n(none)", status)
+
     def test_owner_action_applied_at_once_when_idle(self):
         r = self.r
         r.tasks([task(), {"id": "G1", "title": "g", "agent": "owner-gate", "description": "x"}])
