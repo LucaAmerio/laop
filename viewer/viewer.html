@@ -1556,7 +1556,7 @@ function renderGraph(el) {
   }));
   const nodes = data.tasks.map((t) => {
     const k = kindOf(t), { x, y } = xy[t.id];
-    const sub = t.gate ? "◆ gate" + (t.final ? " · final" : "") : (t.agent + (t.st.attempts ? ` · try ${t.st.attempts}` : ""));
+    const sub = t.gate ? "◆ gate" + (t.final ? " · final" : "") : (t.agent + (t.st.attempts ? ` · ${t.st.attempts} failed` : ""));
     const holds = t.holds_up.length && !["done", "waiting", "gate-wait", "running"].includes(k) ? ` · holds ${t.holds_up.length}` : "";
     const ts = k === "done" || k === "running" ? timeSpan(t, "tspan") : "";
     const cls = `node k-${k} ${selected === t.id ? "sel" : ""} ${rel && rel.has(t.id) ? "on" : ""}`;
@@ -1598,7 +1598,7 @@ function renderTable(el) {
   const rows = data.tasks.filter((t) => GROUPS[tfilter](kindOf(t)) && (!q || (t.id + " " + t.title + " " + t.agent).toLowerCase().includes(q)));
   setHTML(el, `<div class="tabs">${Object.keys(GROUPS).map((g) => `<button data-tfilter="${g}" class="${g === tfilter ? "active" : ""}">${g}</button>`).join("")}
       <span class="spacer"></span><input class="search" id="tq" placeholder="Search tasks" value="${esc(tquery)}"></div>
-    <div class="table-box"><table class="tasks"><thead><tr><th>Task</th><th>Title</th><th>Agent</th><th>Status</th><th>Time</th><th>Tries</th><th>Depends on</th><th>Notes</th></tr></thead><tbody>
+    <div class="table-box"><table class="tasks"><thead><tr><th>Task</th><th>Title</th><th>Agent</th><th>Status</th><th>Time</th><th title="Failed attempts">Failed</th><th>Depends on</th><th>Notes</th></tr></thead><tbody>
     ${rows.map((t) => `<tr data-task="${esc(t.id)}" class="${t.gate ? "gate-row" : ""}"><td><b>${t.gate ? "◆ " : ""}${esc(t.id)}</b></td><td>${esc(t.title)}</td><td class="small">${esc(t.gate ? "owner gate" : t.agent)}</td>
       <td>${kindBadge(t)}</td><td class="small" style="white-space:nowrap">${timeSpan(t)}</td><td>${t.st.attempts || ""}</td><td>${(t.depends_on || []).map(chip).join("")}</td>
       <td class="small">${esc(clip(t.st.blocked_reason || (t.waiting_on.length ? "waits for " + t.waiting_on.join(", ") : ""), 140))}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">No task matches.</td></tr>`}
@@ -1664,7 +1664,7 @@ function renderDrawer() {
   dr.dataset.task = t.id;
   setHTML(dr, `<div class="dhead"><button class="close" data-close="drawer">Close</button>
     <div class="muted small">${esc(t.gate ? "owner gate" : t.agent + (t.review === false ? " · no review" : " → " + (t.reviewer || "evaluator")))}</div>
-    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)} <span class="small muted">${t.gate ? "" : `attempts ${st.attempts || 0} of ${maxA}`}</span></div>
+    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)} <span class="small muted">${t.gate ? "" : `failed attempts ${st.attempts || 0} of ${maxA}`}</span></div>
     <div class="dbody">
     ${st.blocked_reason ? `<div class="sec"><h4>Blocked (${esc(st.block_type || "question")})</h4><div class="box-text prewrap">${esc(st.blocked_reason)}</div></div>` : ""}
     ${timeSection(t)}
