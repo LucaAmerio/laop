@@ -704,11 +704,22 @@ function loopStatus(d = data) {
   if (st.halted) return ["halted", "HALTED"];
   if (st.loop_active && d.stops.hard) return ["soft", "STOPPING (handoff)"];
   if (st.loop_active) return d.stops.soft ? ["soft", "FINISHING (soft stop)"] : ["running", "RUNNING"];
+  if (d.archived && !st.current) return ["idle", "NO MILESTONE"];
   if (all) return ["complete", "MILESTONE COMPLETE"];
   if (st.current) return ["paused", "STOPPED MID-TASK"];
   return ["idle", "IDLE"];
 }
 const byId = (id, d = data) => d.tasks.find((t) => t.id === id);
+/** The milestone line of a repository: the one in progress, or the last one archived. */
+function milestoneMeta(d) {
+  return d.archived ? `no milestone in progress (${d.archived.milestone} archived)` : d.milestone ? "milestone " + d.milestone : "";
+}
+/** After `owner_tools.py archive`: the tasks of tasks.json are history, not a plan to start. */
+function archivedHTML(d = data) {
+  const a = d.archived;
+  return `<b>No milestone in progress.</b> Milestone <b>${esc(a.milestone)}</b> was completed and archived ${esc(whenText(a.time))}
+    (<code>${esc(a.file)}</code>). Plan the next one to see its tasks here.`;
+}
 function dispatchTime(id, d = data) {
   const evs = d.state.events.map(parseEvent);
   for (let i = evs.length - 1; i >= 0; i--) if (evs[i].text.startsWith("dispatch " + id + " to")) return evs[i].time;
@@ -741,7 +752,7 @@ function kindBadge(t) { const k = kindOf(t); return `<span class="badge k-${k}">
 function renderHeader() {
   const d = data, p = d.project, [cls, word] = loopStatus();
   $("#pname").textContent = p.name || "Loop";
-  $("#meta").textContent = [d.milestone && "milestone " + d.milestone, d.branch && "branch " + d.branch, d.head, p.version && "laop " + p.version].filter(Boolean).join(" · ");
+  $("#meta").textContent = [milestoneMeta(d), d.branch && "branch " + d.branch, d.head, p.version && "laop " + p.version].filter(Boolean).join(" · ");
   const pill = $("#pill"); pill.className = "pill " + cls; pill.textContent = word;
   setHTML($("#stops"), SNAP ? "" : stopButtons(active, d.stops, ""));
   const n = needsOf(d).n, nq = questionsDoc(d).filter((q) => q.open || q.provisional).length;
@@ -791,6 +802,7 @@ function renderNow() {
       idle: "No task in flight. The loop is not running." }[cls] || "";
     const ready = data.tasks.filter((t) => kindOf(t) === "ready");
     if (cls === "idle" && ready.length) msg += ` ${ready.length} task(s) ready: type /${esc(data.project.loop_command || "loop")} in the loop session to continue.`;
+    if (data.archived && cls === "idle") msg = archivedHTML();
     setHTML(el, `<h2>Now</h2><div class="now-body"><div class="muted">${msg}</div>` +
       (data.state.last_task ? `<div class="small muted" style="margin-top:6px">Last task: ${chip(data.state.last_task)}</div>` : "") + "</div>");
     return;
@@ -1520,7 +1532,7 @@ function revealSelected() {
   if (r.right > right) box.scrollLeft += r.right - right;
 }
 function renderGraph(el) {
-  if (!data.tasks.length) { setHTML(el, `<div class="empty">No tasks: harness/tasks.json is missing or empty.</div>`); return; }
+  if (!data.tasks.length) { setHTML(el, `<div class="empty">${data.archived ? archivedHTML() : "No tasks: harness/tasks.json is missing or empty."}</div>`); return; }
   const { xy, w, h } = layout();
   // Fit: in the app layout and in full screen the whole graph fits the box (width and height);
   // in a narrow window it fits the width and the page scrolls.
@@ -1581,6 +1593,7 @@ const GROUPS = {
   gates: (k) => k.startsWith("gate"), waiting: (k) => k === "waiting", done: (k) => k === "done",
 };
 function renderTable(el) {
+  if (data.archived && !data.tasks.length) { setHTML(el, `<div class="empty">${archivedHTML()}</div>`); return; }
   const q = tquery.toLowerCase();
   const rows = data.tasks.filter((t) => GROUPS[tfilter](kindOf(t)) && (!q || (t.id + " " + t.title + " " + t.agent).toLowerCase().includes(q)));
   setHTML(el, `<div class="tabs">${Object.keys(GROUPS).map((g) => `<button data-tfilter="${g}" class="${g === tfilter ? "active" : ""}">${g}</button>`).join("")}
@@ -1749,6 +1762,7 @@ function nowText(r, cls) {
   let now = { running: "Between steps.", complete: "Every task is done.", halted: "Halted.", kill: "Emergency stop.", idle: "Not running." }[cls] || "";
   const ready = r.tasks.filter((t) => kindOf(t, r) === "ready").length;
   if (cls === "idle" && ready) now += ` ${ready} task(s) ready.`;
+  if (cls === "idle" && r.archived) now = `No milestone in progress (${esc(r.archived.milestone)} archived).`;
   return now;
 }
 function overviewCard(r) {
@@ -1773,7 +1787,7 @@ function overviewCard(r) {
   const last = r.state.events.length ? parseEvent(r.state.events[r.state.events.length - 1]) : null;
   return `<section class="card ov-card" data-rtab="${esc(r.id)}">
     <div class="ov-head"><h3>${esc(r.name)}</h3><span class="pill ${cls}">${esc(word)}</span>
-      <span class="muted small">${esc([r.milestone && "milestone " + r.milestone, r.branch && "branch " + r.branch].filter(Boolean).join(" · "))}</span></div>
+      <span class="muted small">${esc([milestoneMeta(r), r.branch && "branch " + r.branch].filter(Boolean).join(" · "))}</span></div>
     <div class="bar-seg">${b.bar}</div><div class="legend">${b.legend}</div>
     <div class="ov-now">${now}</div>
     ${items.length ? `<div class="ov-items">${items.slice(0, 6).map(([k, h]) => `<div class="ov-item k-${k}">${h}</div>`).join("")}${items.length > 6 ? `<div class="small muted">and ${items.length - 6} more</div>` : ""}</div>`

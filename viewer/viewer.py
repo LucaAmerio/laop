@@ -298,6 +298,35 @@ class Repo:
         return {k: v for k, v in snap.items() if k not in heavy} | {
             "name": snap["project"]["name"], "path": str(self.root), "tasks": tasks, "state": state}
 
+    def archived(self, doc, state: dict) -> dict | None:
+        """The milestone of tasks.json when `owner_tools.py archive` has filed its state away and
+        nothing was planned since: state.json holds no task (at most the resolver's ledger) and
+        harness/logs has a state_<milestone>_<YYYYmmdd_HHMM>.json not older than tasks.json."""
+        if not isinstance(doc, dict) or not doc.get("milestone") or state.get("tasks") or state.get("current"):
+            return None
+        milestone = str(doc["milestone"])
+        name = re.compile(r"state_" + re.escape(milestone) + r"_(\d{8}_\d{4})\.json")
+        found = []
+        try:
+            for p in (self.h / "logs").iterdir():
+                m = name.fullmatch(p.name)
+                if m:
+                    try:
+                        found.append((time.mktime(time.strptime(m.group(1), "%Y%m%d_%H%M")), p))
+                    except ValueError:
+                        continue
+        except OSError:
+            return None
+        if not found:
+            return None
+        when, path = max(found)
+        try:  # tasks.json rewritten after the archive (the name is to the minute): planned again
+            if (self.h / "tasks.json").stat().st_mtime > when + 120:
+                return None
+        except OSError:
+            return None
+        return {"milestone": milestone, "time": when, "file": path.relative_to(self.root).as_posix()}
+
     def _build_snapshot(self) -> dict:
         problems: list[str] = []
         project = self.project()
@@ -312,6 +341,9 @@ class Repo:
         tasks_doc = doc.get("tasks", []) if isinstance(doc, dict) else []
         if doc is None:
             problems.append("harness/tasks.json not found: plan the milestone first.")
+        archived = self.archived(doc, state)
+        if archived:  # its tasks are history: shown with no state they would look not started
+            tasks_doc = []
         st_tasks = state.get("tasks", {}) if isinstance(state.get("tasks"), dict) else {}
         tasks = build_tasks(tasks_doc, st_tasks, problems)
         cur_id = state["current"].get("task_id") if isinstance(state.get("current"), dict) else None
@@ -342,7 +374,8 @@ class Repo:
                 "external_programs": project.get("external_programs", []),
                 "version": lock.get("version"),
             },
-            "milestone": doc.get("milestone") if isinstance(doc, dict) else None,
+            "milestone": doc.get("milestone") if isinstance(doc, dict) and not archived else None,
+            "archived": archived,
             "branch": self.git("rev-parse", "--abbrev-ref", "HEAD"),
             "head": self.git("rev-parse", "--short", "HEAD"),
             "tasks": tasks,

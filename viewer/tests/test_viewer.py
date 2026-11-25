@@ -701,5 +701,50 @@ class ConversationTest(unittest.TestCase):
         self.assertIsNone(handler.convs.get(conv["id"]))
 
 
+class ArchivedMilestoneTest(unittest.TestCase):
+    """Talos M6d: after `owner_tools.py archive` the graph showed the milestone's tasks with no
+    state, as if the milestone had still to start."""
+
+    def setUp(self):
+        self.repo = Repo()
+        self.repo.tasks(TASKS)
+        self.repo.step("step_next")
+        self.v = load_viewer(self.repo).Repo(self.repo.root)
+
+    def tearDown(self):
+        self.repo.close()
+
+    def test_archived_milestone_shows_no_task(self):
+        self.assertIsNone(self.v.snapshot()["archived"])
+        self.assertIn("archived", self.repo.owner("archive"))
+        snap = self.v.snapshot()
+        self.assertEqual(snap["archived"]["milestone"], "m1")
+        self.assertTrue(snap["archived"]["file"].startswith("harness/logs/state_m1_"))
+        self.assertEqual(snap["tasks"], [])
+        self.assertIsNone(snap["milestone"])
+        self.assertEqual(snap["decisions"], [])
+        self.assertEqual(self.v.summary()["archived"]["milestone"], "m1")
+
+    def test_next_milestone_planned_after_the_archive(self):
+        self.repo.owner("archive")
+        self.repo.commit_file("harness/tasks.json", json.dumps({"milestone": "m2", "tasks": TASKS}), "plan m2")
+        snap = self.v.snapshot()
+        self.assertIsNone(snap["archived"])
+        self.assertEqual(snap["milestone"], "m2")
+        self.assertEqual(len(snap["tasks"]), 3)
+
+    def test_same_milestone_planned_again_after_the_archive(self):
+        self.repo.owner("archive")
+        tasks = self.repo.root / "harness" / "tasks.json"
+        later = tasks.stat().st_mtime + 600
+        os.utime(tasks, (later, later))
+        self.assertIsNone(self.v.snapshot()["archived"])
+
+    def test_page_says_no_milestone_in_progress(self):
+        page = (VIEW / "viewer.html").read_text(encoding="utf-8")
+        self.assertIn("No milestone in progress", page)
+        self.assertIn("NO MILESTONE", page)
+
+
 if __name__ == "__main__":
     unittest.main()

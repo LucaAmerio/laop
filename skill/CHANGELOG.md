@@ -1,5 +1,17 @@
 # laop changelog
 
+## 0.6.3 (2026-11-25)
+
+The monitor shows when no milestone is in progress (Talos: after M6d was archived, the graph showed
+its 13 tasks with no state, as if the milestone had still to start).
+
+- After `owner_tools.py archive`, while `state.json` holds no task and `harness/logs` has
+  `state_<milestone>_<time>.json` for the milestone of `tasks.json` (not older than it), the monitor
+  shows no task: status `NO MILESTONE`, "No milestone in progress" with the milestone archived and
+  when, in Now, Graph, the task table and the overview. Planning the next milestone (a new
+  `tasks.json`) shows its tasks again.
+- Monitor only: no core file changed (run `upgrade` only to record the version).
+
 ## 0.6.2 (2026-11-21)
 
 A gate given new tasks after it was reached is no longer shown as waiting for the owner (Argus:
