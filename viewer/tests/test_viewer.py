@@ -701,6 +701,29 @@ class ConversationTest(unittest.TestCase):
         self.assertIsNone(handler.convs.get(conv["id"]))
 
 
+class ChecksOnlyTest(unittest.TestCase):
+    """A checks_only task (laop 0.7) is shown as such, with how its checks went."""
+
+    def test_checks_only_task_in_the_summary_and_the_page(self):
+        repo = Repo()
+        try:
+            repo.tasks([{"id": "C1", "title": "Checkpoint", "agent": "builder", "checks_only": True,
+                         "check_budget_min": 60, "acceptance": [{"cmd": ["python", "-c", "pass"]}]},
+                        {"id": "T1", "title": "Next", "agent": "builder", "depends_on": ["C1"],
+                         "acceptance": [{"cmd": ["python", "-c", "pass"]}]}])
+            self.assertIn("CHECKS ONLY", repo.step("step_next"))
+            v = load_viewer(repo).Repo(repo.root)
+            self.assertTrue(v.snapshot()["state"]["current"]["checks_only"])
+            self.assertIn("'done'", repo.step("step_verify"))
+            tasks = {t["id"]: t for t in v.summary()["tasks"]}
+            self.assertTrue(tasks["C1"]["checks_only"])
+            self.assertEqual(tasks["C1"]["st"]["checks_only"]["result"], "passed")
+            self.assertFalse(tasks["T1"]["checks_only"])
+            self.assertEqual(tasks["C1"]["time"].get("dispatches"), 1)  # its checks count as work time
+        finally:
+            repo.close()
+
+
 class ArchivedMilestoneTest(unittest.TestCase):
     """Talos M6d: after `owner_tools.py archive` the graph showed the milestone's tasks with no
     state, as if the milestone had still to start."""

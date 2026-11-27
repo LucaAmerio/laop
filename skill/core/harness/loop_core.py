@@ -256,6 +256,34 @@ def reviewer_roles() -> set[str]:
     return pathrules.reviewer_roles(REPO)
 
 
+#: Optional task fields that replace project.json's check time for that task's checks.
+TASK_CHECK_KEYS = ("check_budget_min", "check_timeout_min")
+
+
+def _positive_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
+def check_budget(task: dict) -> float:
+    """Minutes for all the checks of ``task``: its own check_budget_min, else project.json's."""
+    return float(task.get("check_budget_min") or C.CHECK_BUDGET_MIN)
+
+
+def check_timeout(task: dict) -> float:
+    """Minutes for one check of ``task``: its own check_timeout_min, else project.json's."""
+    return float(task.get("check_timeout_min") or C.CHECK_TIMEOUT_MIN)
+
+
+def checks_only_due(task: dict, st: dict) -> bool:
+    """A checks_only task runs its checks before any agent once per base: at its first dispatch,
+    and again after unblock or override (which give it a fresh base). Once they failed, its
+    dispatches are ordinary builder attempts until the task gets a new base."""
+    if not task.get("checks_only"):
+        return False
+    run = st.get("checks_only") or {}
+    return run.get("base") != st.get("base_sha")
+
+
 def load_tasks() -> dict:
     doc = load_json(TASKS_FILE)
     if doc is None:
@@ -275,6 +303,12 @@ def load_tasks() -> dict:
             continue
         if not t.get("acceptance"):
             raise LoopError(f"Task {t['id']} has no acceptance checks (default FAIL needs some).")
+        for key in TASK_CHECK_KEYS:
+            if key in t and not _positive_number(t[key]):
+                raise LoopError(f"Task {t['id']}: {key} must be a positive number of minutes, "
+                                f"not {t[key]!r}.")
+        if "checks_only" in t and not isinstance(t["checks_only"], bool):
+            raise LoopError(f"Task {t['id']}: checks_only must be true or false.")
         if t.get("review", True) and t.get("reviewer", "evaluator") not in reviewers:
             raise LoopError(f"Task {t['id']}: reviewer must be one of {sorted(reviewers)} "
                             "(roles with \"reviewer\": true in harness/roles.json).")
@@ -423,6 +457,18 @@ def provisional_lines(state: dict) -> str:
             f"{listed}. Ratify or override each with harness/owner_tools.py.")
 
 
+def checks_only_label(st: dict) -> str:
+    """How a checks_only task went, for the status: not run yet, passed directly, or failed and
+    sent to its agent."""
+    result = (st.get("checks_only") or {}).get("result")
+    if result == "passed":
+        return "checks only: passed directly"
+    if result == "failed":
+        return "checks only: failed, fixed by the agent" if st["status"] == "done" else \
+            "checks only: failed, the agent fixes it"
+    return "checks only"
+
+
 def write_status(doc: dict, state: dict) -> None:
     counts: dict[str, int] = {}
     rows, blocked, gates, reverify = [], [], [], []
@@ -430,6 +476,8 @@ def write_status(doc: dict, state: dict) -> None:
         st = state["tasks"][t["id"]]
         counts[st["status"]] = counts.get(st["status"], 0) + 1
         shown = st["status"] + (" (reverify)" if st.get("reverify") else "")
+        if t.get("checks_only"):
+            shown += f" ({checks_only_label(st)})"
         rows.append(f"| {t['id']} | {t['agent']} | {shown} | {st['attempts']} | {t['title']} |")
         if st.get("reverify"):
             reverify.append(f"- **{t['id']}**: owner reverify queued {st['reverify'].get('queued', '')}; "
@@ -1029,19 +1077,22 @@ def run_command(cmd: list[str], timeout: float, out_file: Path) -> tuple[int | N
 
 def run_checks(task: dict, attempt: int, started: float | None = None,
                on_report=None) -> tuple[bool, str]:
-    """Run the global and acceptance checks within the time budget (CHECK_BUDGET_MIN, counted in
+    """Run the global and acceptance checks within the time budget (check_budget(task), counted in
     wall-clock time from ``started``): a check that cannot start or finish within the remaining
     budget fails the attempt. ``on_report(i, ok, report)`` is called after each check."""
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     reports, all_ok = [], True
-    deadline = (started or time.time()) + C.CHECK_BUDGET_MIN * 60
+    budget = check_budget(task)
+    where = ("the task's check_budget_min in harness/tasks.json" if task.get("check_budget_min")
+             else "harness/project.json, check_budget_min")
+    deadline = (started or time.time()) + budget * 60
     for i, check in enumerate(C.GLOBAL_CHECKS + task["acceptance"]):
         remaining = deadline - time.time()
-        timeout = min(C.CHECK_TIMEOUT_MIN * 60, remaining)
+        timeout = min(check_timeout(task) * 60, remaining)
         out = ""
         if timeout <= 5:
-            ok, detail = False, (f"not run: the time budget of {C.CHECK_BUDGET_MIN} min for all the "
-                                 "checks of a task is exhausted (harness/project.json, check_budget_min)")
+            ok, detail = False, (f"not run: the time budget of {budget:g} min for all the "
+                                 f"checks of a task is exhausted ({where})")
         else:
             out_file = LOG_DIR / f"check_{task['id']}_{attempt}_{i}.out"
             try:
@@ -1636,6 +1687,9 @@ def lint_tasks(doc: dict) -> list[str]:
                 if not matches_allow(cfg, path):
                     warnings.append(f"{t['id']}: '{path}' looks like a file to write, outside the "
                                     f"write allowlist of '{t['agent']}'")
+        if any(k in t for k in TASK_CHECK_KEYS) and check_timeout(t) > check_budget(t):
+            warnings.append(f"{t['id']}: check_timeout_min {check_timeout(t):g} is more than "
+                            f"check_budget_min {check_budget(t):g}: the budget caps every check")
         for check in t.get("acceptance", []):
             if json.dumps(check, sort_keys=True) in globals_:
                 warnings.append(f"{t['id']}: acceptance check repeats a global check: {json.dumps(check)}")

@@ -111,8 +111,11 @@ reserved to the owner: neither the resolver nor the challenger approves these do
       ],
       "review": true
     },
+    {"id": "M1-CP1", "title": "Checkpoint: full suite", "agent": "builder", "checks_only": true,
+     "check_budget_min": 70, "check_timeout_min": 60, "depends_on": ["M1-001"],
+     "acceptance": [{"cmd": ["npx", "playwright", "test", "--grep", "@full"]}]},
     {"id": "M1-G1", "title": "Gate G1", "agent": "owner-gate", "description": "Owner steps.",
-     "depends_on": ["M1-001"], "final": false}
+     "depends_on": ["M1-CP1"], "final": false}
   ]
 }
 ```
@@ -124,6 +127,8 @@ reserved to the owner: neither the resolver nor the challenger approves these do
 - Long checks: a Bash call lasts at most 10 minutes, so `step_verify` never runs the checks itself. It starts them in a detached process (`harness/checks.py`, record `harness/logs/checks/run.json`, phase `checking`) and waits at most `check_wait_min` (default 8, at most 8.5) per call; while they run it prints `CHECKS RUNNING` and names itself as the NEXT ACTION. Fast checks finish within the first call, as before.
 - Interruptions: the runner survives the end of the Bash call and of the Claude Code session, and keeps a heartbeat. Whoever runs `step_verify` next (directly, or via `step_next`, which routes the `checking` phase there) takes a finished result if HEAD did not move; otherwise, and when the runner is gone (session, machine or process stopped) or crashed, the checks start again from scratch, not counted as an attempt. After `check_restarts` (default 2) restarts without a result the task is blocked (`harness`) and the loop halts.
 - Checks longer than `check_warn_min` (default 9) are logged as slow, with one notification per run of the loop: the suite is growing.
+- Per-task check time (optional): `check_budget_min` and `check_timeout_min` on a task replace those of `project.json` for that task's checks (global and acceptance), in the detached runner and in the budget `CHECKS RUNNING` shows; absent, the project's apply. Positive numbers only (minutes); the loop refuses anything else. Use them for a task that runs a longer suite than usual, such as a checkpoint.
+- `checks_only: true` (optional): a checkpoint. At dispatch no agent is spawned: the harness runs the task's checks at once (with its own check time if set; `step_next` prints `CHECKS ONLY`, then `step_verify` waits as for any checks). Passed: the task is done, with no agent and no review (event `done (checks only: ...)`). Failed: the report is written to the task's findings and the task goes to its `agent` as an ordinary attempt, "fix the regressions without weakening the tests"; then the usual checks, review, attempts, blocking and reverify. The checks-only run itself is not counted as an attempt. It runs once per base: again after `unblock` or an override, which give the task a fresh base, not on `resume`. `agent` stays a dispatch role (the one that fixes failures) and `acceptance` is required as for any task. A typical plan keeps the daily `global_checks` short, puts the slow tests in a checkpoint's `acceptance` with a larger `check_budget_min`, inserts a checkpoint every few tasks and makes each gate depend on one.
 
 ## Claims
 

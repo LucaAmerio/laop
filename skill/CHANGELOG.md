@@ -1,5 +1,30 @@
 # laop changelog
 
+## 0.7.0 (2026-11-28)
+
+Checkpoint tasks: per-task check time and tasks that run their checks before any agent (Argus: the
+full suite takes 45 to 50 minutes; the owner wants a daily suite under 20 minutes on every task and
+the full suite only at checkpoints, every few tasks and before each gate).
+
+- New optional task fields `check_budget_min` and `check_timeout_min`: when present they replace
+  `project.json`'s for that task's checks (global and acceptance), in the detached runner (recorded
+  in `harness/logs/checks/run.json`) and in the budget `CHECKS RUNNING` shows. The loop refuses a
+  value that is not a positive number; the lint warns when a task's timeout exceeds its budget.
+- New optional task field `checks_only: true`. At dispatch no agent is spawned: `step_next` starts
+  the task's checks at once (`CHECKS ONLY`), `step_verify` waits for them as usual. Passed: the task
+  is done with no agent and no review. Failed: the report goes to the task's findings with "fix the
+  regressions without weakening the tests" and the task's `agent` gets an ordinary attempt (checks,
+  review, attempts, blocking, reverify as for any task). The checks-only run is not an attempt; it
+  runs once per base (again after `unblock` or an override, not after `resume`). The state records
+  it as `tasks.<id>.checks_only` (`result` passed or failed). `STATUS.md` says how it went.
+- Monitor: a checks-only task has a dashed inner ring and says how its checks went (`checks ✓
+  direct`, `checks → builder`, `checks → fixed`) in the Graph, a badge in the task table, the Now
+  panel (phases "Checks only (no agent)", then done or the agent) and the task details.
+- Planner template (new projects; existing projects edit their own copy if they want it): when the
+  full suite is slow, plan checkpoint tasks with these fields.
+- Run `upgrade`: core files changed (`loop_core.py`, `step_next.py`, `step_verify.py`, `checks.py`,
+  `README.md`).
+
 ## 0.6.3 (2026-11-25)
 
 The monitor shows when no milestone is in progress (Talos: after M6d was archived, the graph showed

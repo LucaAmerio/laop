@@ -876,8 +876,8 @@ def kill_tree(pid: int) -> None:
             pass
 
 
-class CheckRunTests(HarnessTest):
-    """The checks run detached (harness/checks.py); step_verify waits in slices and resumes."""
+class CheckRunBase(HarnessTest):
+    """Helpers of the tests whose checks run detached (harness/checks.py)."""
 
     def setUp(self):
         super().setUp()
@@ -922,6 +922,10 @@ class CheckRunTests(HarnessTest):
             if "CHECKS RUNNING" not in out:
                 return out
         self.fail("the checks never finished")
+
+
+class CheckRunTests(CheckRunBase):
+    """The checks run detached (harness/checks.py); step_verify waits in slices and resumes."""
 
     def test_fast_checks_finish_in_one_call(self):
         out = self.start(counting_check(self.counter, 0), check_wait_min=8)
@@ -992,10 +996,156 @@ class CheckRunTests(HarnessTest):
         self.assertTrue(self.r.state().get("slow_checks_warned"))
 
 
+SRC_FIXED = {"cmd": ["python", "-c", "import pathlib, sys; sys.exit(not pathlib.Path('src/fixed.py').exists())"]}
+
+
+class TaskCheckTimeTests(CheckRunBase):
+    """check_budget_min / check_timeout_min on a task replace project.json's for its checks."""
+
+    def test_task_budget_replaces_the_project_budget(self):
+        r = self.r
+        r.tasks([task(check_budget_min=0.05,  # 3 s; the project's default is 40 min
+                      acceptance=[{"cmd": ["python", "-c", "import time; time.sleep(10)"]},
+                                  {"cmd": ["python", "-c", "pass"]}])])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n")
+        r.claim("M1-001")
+        self.assertIn("is now 'todo'", self.verify_until_done())
+        findings = (r.root / "harness" / "findings" / "M1-001.md").read_text()
+        self.assertIn("time budget of 0.05 min", findings)
+        self.assertIn("check_budget_min in harness/tasks.json", findings)
+
+    def test_task_timeout_replaces_the_project_timeout(self):
+        r = self.r
+        # 9 s (a check under 5 s is not started); the project's default is 30 min
+        r.tasks([task(check_timeout_min=0.15, acceptance=[{"cmd": ["python", "-c", "import time; time.sleep(40)"]}])])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n")
+        r.claim("M1-001")
+        self.assertIn("is now 'todo'", self.verify_until_done())
+        self.assertIn("timeout after 0.1 min", (r.root / "harness" / "findings" / "M1-001.md").read_text())
+
+    def test_checks_running_shows_the_task_budget(self):
+        r = self.r
+        pj = json.loads((r.root / "harness" / "project.json").read_text())
+        pj.update(check_wait_min=0.02)
+        r.commit_file("harness/project.json", json.dumps(pj), "config")
+        r.tasks([task(check_budget_min=7, acceptance=[counting_check(self.counter, 3)])])
+        r.step("step_next")
+        r.commit_file("src/b.py", "B = 2\n")
+        r.claim("M1-001")
+        out = r.step("step_verify")
+        self.assertIn("CHECKS RUNNING", out)
+        self.assertIn("(budget 7 min)", out)
+        self.assertEqual(self.run_record()["budget_min"], 7)
+        self.assertIn("REVIEW", self.verify_until_done())
+
+    def test_bad_values_are_refused(self):
+        r = self.r
+        for bad in ({"check_budget_min": 0}, {"check_timeout_min": -1}, {"check_budget_min": "20"},
+                    {"check_timeout_min": True}, {"checks_only": "yes"}):
+            with self.subTest(bad=bad):
+                r.tasks([task(**bad)])
+                out = r.step("step_next")
+                self.assertIn("HALTED: configuration problem", out)
+                self.assertIn(next(iter(bad)), out)
+
+    def test_lint_warns_when_the_timeout_exceeds_the_budget(self):
+        r = self.r
+        r.tasks([task(check_budget_min=5, check_timeout_min=10)])
+        self.assertIn("check_timeout_min 10 is more than check_budget_min 5", r.step("step_next"))
+
+
+class ChecksOnlyTests(CheckRunBase):
+    """checks_only: the checks run before any agent; passed, done without review; failed, the
+    task's agent fixes the regressions in an ordinary attempt (Argus checkpoints)."""
+
+    def test_pass_path_needs_no_agent_and_no_review(self):
+        r = self.r
+        r.tasks([task(checks_only=True), task("M1-002", depends_on=["M1-001"])])
+        out = r.step("step_next")
+        self.assertIn("CHECKS ONLY: task M1-001", out)
+        self.assertIn("NEXT ACTION: run python harness/step_verify.py", out)
+        current = r.state()["current"]
+        self.assertTrue(current["checks_only"])
+        self.assertEqual(current["phase"], "checking")
+        self.assertNotIn("spawn", current)
+        self.assertEqual(r.tool("Agent", {"subagent_type": "builder", "prompt": "x"})[0], 2)
+        out = self.verify_until_done()
+        self.assertIn("M1-001 is now 'done'", out)
+        state = r.state()
+        st = state["tasks"]["M1-001"]
+        self.assertEqual((st["attempts"], st["checks_only"]["result"]), (0, "passed"))
+        self.assertTrue(any("done (checks only: the checks passed, no agent dispatched, no review)" in e
+                            for e in state["events"]))
+        self.assertIn("done (checks only: passed directly)", (r.root / "harness" / "STATUS.md").read_text())
+        self.assertIn("DISPATCH: task M1-002", r.step("step_next"))
+
+    def test_fail_path_goes_to_the_agent_with_the_report(self):
+        r = self.r
+        r.tasks([task(checks_only=True, acceptance=[SRC_FIXED])])
+        self.assertIn("CHECKS ONLY", r.step("step_next"))
+        out = self.verify_until_done()
+        self.assertIn("M1-001 is now 'todo'", out)
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual((st["attempts"], st["checks_only"]["result"]), (0, "failed"))  # the trigger, not an attempt
+        self.assertIn("failed, the agent fixes it", (r.root / "harness" / "STATUS.md").read_text())
+        out = r.step("step_next")
+        self.assertIn("DISPATCH: task M1-001", out)
+        current = r.state()["current"]
+        self.assertEqual((current["spawn"]["agent"], current["attempt"]), ("builder", 1))
+        prompt = (r.root / "harness" / "current_prompt.md").read_text()
+        self.assertIn("Fix the regressions without weakening the tests", prompt)
+        self.assertIn("[FAIL]", prompt)
+        r.commit_file("src/fixed.py", "X = 1\n", "M1-001: fix")
+        r.claim("M1-001")
+        self.assertIn("REVIEW", r.step("step_verify"))  # an ordinary attempt: checks, then review
+        (r.root / r.state()["current"]["verdict"]).write_text("VERDICT: PASS\n")
+        self.assertIn("'done'", r.step("step_record"))
+        st = r.state()["tasks"]["M1-001"]
+        self.assertEqual(st["attempts"], 0)
+        self.assertIn("done (checks only: failed, fixed by the agent)", (r.root / "harness" / "STATUS.md").read_text())
+
+    def test_failed_fix_counts_attempts_and_unblock_runs_the_checks_first_again(self):
+        r = self.r
+        pj = json.loads((r.root / "harness" / "project.json").read_text())
+        pj["max_attempts_per_task"] = 1
+        r.commit_file("harness/project.json", json.dumps(pj), "config")
+        r.tasks([task(checks_only=True, acceptance=[SRC_FIXED])])
+        r.step("step_next")
+        self.verify_until_done()
+        self.assertIn("DISPATCH", r.step("step_next"))
+        r.commit_file("src/other.py", "X = 1\n", "M1-001: not the fix")
+        r.claim("M1-001")
+        self.assertIn("'blocked'", self.verify_until_done())  # max_attempts 1: blocked as any task
+        self.assertIn("applied", r.owner("unblock", "task=M1-001"))
+        r.commit_file("src/fixed.py", "X = 1\n", "owner: fix")
+        self.assertIn("CHECKS ONLY", r.step("step_next"))  # a fresh base: the checks first again
+        self.assertIn("'done'", self.verify_until_done())
+        self.assertEqual(r.state()["tasks"]["M1-001"]["checks_only"]["result"], "passed")
+
+    def test_runner_gone_during_checks_only_is_started_again(self):
+        r = self.r
+        pj = json.loads((r.root / "harness" / "project.json").read_text())
+        pj.update(check_wait_min=0.02)
+        r.commit_file("harness/project.json", json.dumps(pj), "config")
+        r.tasks([task(checks_only=True, check_budget_min=3, acceptance=[counting_check(self.counter, 120)])])
+        r.step("step_next")
+        out = r.step("step_verify")
+        self.assertIn("CHECKS RUNNING", out)
+        self.assertIn("(budget 3 min)", out)
+        self.until(lambda: self.run_record().get("pid") and self.runs() == 1)
+        kill_tree(self.run_record()["pid"])
+        r.step("step_verify")
+        self.until(lambda: self.runs() == 2)
+        self.assertTrue(any("checks started again" in e for e in r.state()["events"]))
+        self.assertTrue(r.state()["current"]["checks_only"])
+
+
 # ============================================================================ owner reverify
 
 
-FIXED = {"cmd": ["python", "-c", "import pathlib, sys; sys.exit(not pathlib.Path('data/fixed.txt').exists())"]}
+FIXED ={"cmd": ["python", "-c", "import pathlib, sys; sys.exit(not pathlib.Path('data/fixed.txt').exists())"]}
 
 
 class StopTests(HarnessTest):

@@ -13,6 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import checks  # noqa: E402
 import loop_config as C  # noqa: E402
 import loop_core as L  # noqa: E402
 
@@ -170,6 +171,8 @@ def run(doc: dict, state: dict) -> str:
     }
     if reverify:
         return start_reverify(doc, state, task, reverify, starting, warnings)
+    if L.checks_only_due(task, st):
+        return start_checks_only(doc, state, task, starting, warnings, sorted(owner_files))
     token_line = L.spawn(state, task["agent"], L.PROMPT_FILE, "DISPATCH", task["id"])
     state["last_task"] = task["id"]
     if starting:
@@ -220,6 +223,34 @@ def start_reverify(doc: dict, state: dict, task: dict, reverify: dict, starting:
     L.save_state(doc, state)
     out = (f"REVERIFY: task {task['id']} ({task['title']}): the owner asked to verify its committed work "
            "again; no subagent to spawn, the harness checks and the reviewer follow.\n"
+           "NEXT ACTION: run python harness/step_verify.py")
+    if warnings:
+        out = "WARNING (task lint): " + "; ".join(warnings[:10]) + "\n" + out
+    return L.terminal(out, doc, state) if starting else out
+
+
+def start_checks_only(doc: dict, state: dict, task: dict, starting: bool, warnings: list[str],
+                      owner_files: list[str]) -> str:
+    """A checks_only task (a checkpoint): no agent; its checks start at once in their own process
+    and step_verify waits for them. Passed: done, without review. Failed: the next dispatch sends
+    the task to its agent with the report as findings. This run is not counted as an attempt."""
+    st = state["tasks"][task["id"]]
+    current = state["current"]
+    current.update(checks_only=True, attempt=st["attempts"])
+    state["last_task"] = task["id"]
+    if starting:
+        L.notify("loop started", f"First task: {task['id']} (checks only).\n{L.progress(state)}", level="all")
+    state["loop_active"] = True
+    state["iterations"] += 1
+    run_id = checks.start(task, current["attempt"])
+    current.update(phase="checking", checks_run=run_id, checks_restarts=0, checks_waits=0,
+                   checks_owner_files=owner_files, checks_started=time.time())
+    L.event(state, f"dispatch {task['id']} to the checks only: no agent, not counted as an attempt "
+                   f"(run {run_id}, budget {L.check_budget(task):g} min)")
+    L.save_state(doc, state)
+    out = (f"CHECKS ONLY: task {task['id']} ({task['title']}): the harness runs its checks before any "
+           f"agent (budget {L.check_budget(task):g} min); passed, the task is done; failed, its "
+           f"'{task['agent']}' fixes the regressions. No subagent to spawn now.\n"
            "NEXT ACTION: run python harness/step_verify.py")
     if warnings:
         out = "WARNING (task lint): " + "; ".join(warnings[:10]) + "\n" + out

@@ -430,6 +430,10 @@ svg.graph { display: block; flex: none; margin: auto; }
 .node text.ag { fill: var(--muted); font-size: 10.5px; }
 .node { cursor: pointer; }
 .node.sel .box { stroke: var(--accent); stroke-width: 3; }
+/* checks_only (a checkpoint): an inner dashed ring, the agent label says how the checks went */
+.node.co .ring { fill: none; stroke: var(--c); stroke-width: 1.1; stroke-dasharray: 3 3; opacity: .8; }
+.node.co text.ag { fill: var(--c); font-weight: 600; }
+.badge.co { background: transparent; color: var(--muted); border: 1px dashed var(--line); font-weight: 600; }
 /* gates: a hexagon in the gate colour, never mistaken for a task */
 .node.gate .box { fill: var(--gate-bg); stroke: var(--gate); stroke-width: 2.4; stroke-dasharray: none; }
 .node.gate.k-gate-wait .box { fill: var(--panel); stroke-dasharray: 7 4; stroke-width: 1.8; }
@@ -748,6 +752,17 @@ function chip(id) {
     : `<span class="chip k-blocked-harness">${esc(id)}?</span>`;
 }
 function kindBadge(t) { const k = kindOf(t); return `<span class="badge k-${k}">${esc(KINDS[k])}</span>`; }
+/** A checks_only task (laop 0.7, a checkpoint): its checks run before any agent. How it went:
+ *  `short` for the graph, `long` for tables and details; null for any other task. */
+function checksOnly(t) {
+  if (!t || !t.checks_only) return null;
+  const r = (t.st.checks_only || {}).result, done = t.st.status === "done";
+  if (r === "passed") return { short: "checks ✓ direct", long: "checks only: passed directly, no agent" };
+  if (r === "failed") return done ? { short: "checks → fixed", long: `checks only: failed, fixed by ${t.agent}` }
+    : { short: "checks → " + t.agent, long: `checks only: failed, ${t.agent} fixes the regressions` };
+  return { short: "checks only", long: `checks only: run before any agent (${t.agent} if they fail)` };
+}
+function checksBadge(t) { const c = checksOnly(t); return c ? ` <span class="badge co" title="${esc(c.long)}">${esc(c.short)}</span>` : ""; }
 
 function renderHeader() {
   const d = data, p = d.project, [cls, word] = loopStatus();
@@ -809,7 +824,9 @@ function renderNow() {
   }
   const t = byId(cur.task_id) || { id: cur.task_id, title: "", st: {} };
   const info = phaseInfo(cur), p = cur.phase;
-  const seq = p === "resolving" || p === "challenging"
+  const seq = cur.checks_only
+    ? [["checks", "Checks only (no agent)"], ["end", `Done, or ${cur.agent} fixes them`]]
+    : p === "resolving" || p === "challenging"
     ? [["dispatched", "Agent: " + cur.agent], ["q", "Question"], ["resolving", "Resolver"], ["challenging", "Challenger"], ["back", "Task resumes or owner"]]
     : [["dispatched", "Agent: " + cur.agent], ["checks", "Checks"], ["awaiting_review", "Review: " + (cur.reviewer || "evaluator")], ["end", "Done or retry"]];
   const curKey = info.checking ? "checks" : p;
@@ -819,11 +836,11 @@ function renderNow() {
   const claim = data.claim && data.claim.task_id === cur.task_id ? data.claim : null;
   const firstDispatch = dispatchTime(cur.task_id);
   setHTML(el, `<h2>Now${cls !== "running" ? " · " + esc(word) : ""}</h2>
-    <div class="now-head"><span class="tid">${esc(t.id)}</span><span class="ttl" title="${esc(t.title)}">${esc(t.title)}</span>${t.st ? kindBadge(t) : ""}</div>
+    <div class="now-head"><span class="tid">${esc(t.id)}</span><span class="ttl" title="${esc(t.title)}">${esc(t.title)}</span>${t.st ? kindBadge(t) + checksBadge(t) : ""}</div>
     <div class="phases">${phases}</div>
     <div class="now-body"><dl class="kv">
       <dt>Working</dt><dd><b>${esc(info.who)}</b>${info.start ? ` for <b data-since="${info.start}">${dur(nowS() - info.start)}</b>` : ""}</dd>
-      <dt>Attempt</dt><dd>${cur.attempt ?? "?"} of ${maxA}</dd>
+      <dt>Attempt</dt><dd>${cur.checks_only ? "checks-only run, not an attempt" : `${cur.attempt ?? "?"} of ${maxA}`}</dd>
       ${t.time && timeOf(t).work >= 1 ? `<dt>Task time</dt><dd>${timeSpan(t)} of work over ${timeOf(t).dispatches} dispatch(es)</dd>` : ""}
       ${firstDispatch && p !== "dispatched" ? `<dt>Dispatched</dt><dd><span data-ago="${firstDispatch}">${ago(firstDispatch)}</span></dd>` : ""}
       ${cur.question_id ? `<dt>Question</dt><dd>${esc(cur.question_id)}${cur.resolution ? ` · <a data-file="${esc(cur.resolution)}">${esc(cur.resolution)}</a>` : ""}</dd>` : ""}
@@ -1556,11 +1573,12 @@ function renderGraph(el) {
   }));
   const nodes = data.tasks.map((t) => {
     const k = kindOf(t), { x, y } = xy[t.id];
-    const sub = t.gate ? "◆ gate" + (t.final ? " · final" : "") : (t.agent + (t.st.attempts ? ` · ${t.st.attempts} failed` : ""));
+    const co = checksOnly(t);
+    const sub = t.gate ? "◆ gate" + (t.final ? " · final" : "") : co ? co.short : (t.agent + (t.st.attempts ? ` · ${t.st.attempts} failed` : ""));
     const holds = t.holds_up.length && !["done", "waiting", "gate-wait", "running"].includes(k) ? ` · holds ${t.holds_up.length}` : "";
     const ts = k === "done" || k === "running" ? timeSpan(t, "tspan") : "";
     const cls = `node k-${k} ${selected === t.id ? "sel" : ""} ${rel && rel.has(t.id) ? "on" : ""}`;
-    const tip = `<title>${esc(t.id)} · ${esc(t.title)}\n${esc(KINDS[k])}${t.st.blocked_reason ? "\n" + esc(t.st.blocked_reason) : ""}</title>`;
+    const tip = `<title>${esc(t.id)} · ${esc(t.title)}\n${esc(KINDS[k])}${co ? "\n" + esc(co.long) : ""}${t.st.blocked_reason ? "\n" + esc(t.st.blocked_reason) : ""}</title>`;
     if (t.gate) {
       const ts = timeSpan(t, "tspan");
       return `<g class="${cls} gate" data-task="${esc(t.id)}" transform="translate(${x},${y})">${tip}
@@ -1571,8 +1589,9 @@ function renderGraph(el) {
       <text class="st" x="22" y="56">${esc(KINDS[k])}${holds}${ts ? " · " + ts : ""}</text>
     </g>`;
     }
-    return `<g class="${cls}" data-task="${esc(t.id)}" transform="translate(${x},${y})">${tip}
+    return `<g class="${cls}${co ? " co" : ""}" data-task="${esc(t.id)}" transform="translate(${x},${y})">${tip}
       <rect class="box" width="${NW}" height="${NH}" rx="9"/>
+      ${co ? `<rect class="ring" x="3.5" y="3.5" width="${NW - 7}" height="${NH - 7}" rx="6"/>` : ""}
       <rect class="stripe" x="0" y="0" width="5" height="${NH}" rx="2"/>
       <text class="id" x="13" y="18">${esc(clip(t.id, 16))}</text>
       <text class="ag" x="${NW - 9}" y="18" text-anchor="end">${esc(clip(sub, 18))}</text>
@@ -1600,7 +1619,7 @@ function renderTable(el) {
       <span class="spacer"></span><input class="search" id="tq" placeholder="Search tasks" value="${esc(tquery)}"></div>
     <div class="table-box"><table class="tasks"><thead><tr><th>Task</th><th>Title</th><th>Agent</th><th>Status</th><th>Time</th><th title="Failed attempts">Failed</th><th>Depends on</th><th>Notes</th></tr></thead><tbody>
     ${rows.map((t) => `<tr data-task="${esc(t.id)}" class="${t.gate ? "gate-row" : ""}"><td><b>${t.gate ? "◆ " : ""}${esc(t.id)}</b></td><td>${esc(t.title)}</td><td class="small">${esc(t.gate ? "owner gate" : t.agent)}</td>
-      <td>${kindBadge(t)}</td><td class="small" style="white-space:nowrap">${timeSpan(t)}</td><td>${t.st.attempts || ""}</td><td>${(t.depends_on || []).map(chip).join("")}</td>
+      <td>${kindBadge(t)}${checksBadge(t)}</td><td class="small" style="white-space:nowrap">${timeSpan(t)}</td><td>${t.st.attempts || ""}</td><td>${(t.depends_on || []).map(chip).join("")}</td>
       <td class="small">${esc(clip(t.st.blocked_reason || (t.waiting_on.length ? "waits for " + t.waiting_on.join(", ") : ""), 140))}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">No task matches.</td></tr>`}
     </tbody></table></div>`);
 }
@@ -1663,8 +1682,8 @@ function renderDrawer() {
   const body = dr.querySelector(".dbody"), keep = body && dr.dataset.task === t.id ? body.scrollTop : 0;
   dr.dataset.task = t.id;
   setHTML(dr, `<div class="dhead"><button class="close" data-close="drawer">Close</button>
-    <div class="muted small">${esc(t.gate ? "owner gate" : t.agent + (t.review === false ? " · no review" : " → " + (t.reviewer || "evaluator")))}</div>
-    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)} <span class="small muted">${t.gate ? "" : `failed attempts ${st.attempts || 0} of ${maxA}`}</span></div>
+    <div class="muted small">${esc(t.gate ? "owner gate" : (t.checks_only ? "checks first, then " : "") + t.agent + (t.review === false ? " · no review" : " → " + (t.reviewer || "evaluator")))}</div>
+    <h3>${esc(t.id)} · ${esc(t.title)}</h3>${kindBadge(t)}${checksBadge(t)} <span class="small muted">${t.gate ? "" : `failed attempts ${st.attempts || 0} of ${maxA}`}</span></div>
     <div class="dbody">
     ${st.blocked_reason ? `<div class="sec"><h4>Blocked (${esc(st.block_type || "question")})</h4><div class="box-text prewrap">${esc(st.blocked_reason)}</div></div>` : ""}
     ${timeSection(t)}

@@ -224,7 +224,7 @@ def wait_checks(doc: dict, state: dict) -> str:
     L.save_state(doc, state)
     elapsed = (time.time() - (rec.get("started") or rec["created"])) / 60
     return (f"CHECKS RUNNING: {task['id']}: {len(rec.get('reports', []))} of {rec['n_checks']} checks done "
-            f"after {elapsed:.1f} min (budget {C.CHECK_BUDGET_MIN:g} min). They run in a process of their "
+            f"after {elapsed:.1f} min (budget {L.check_budget(task):g} min). They run in a process of their "
             "own; this script waits for them in slices shorter than a Bash call.\n"
             "NEXT ACTION: run python harness/step_verify.py")
 
@@ -246,6 +246,8 @@ def finish_checks(doc: dict, state: dict, task: dict, rec: dict) -> str:
             L.notify("slow checks", f"The checks of {task['id']} took {minutes:.1f} min, more than "
                      f"check_warn_min ({C.CHECK_WARN_MIN:g} min). The loop goes on; the test suite is "
                      "growing. Notified once per run of the loop.")
+    if current.get("checks_only"):
+        return finish_checks_only(doc, state, task, rec)
     via = " (owner reverify)" if current.get("reverify") else ""
     if not rec["all_ok"]:
         L.fail_attempt(doc, state, task, f"Harness checks failed{via}.\n\n" + rec["report"])
@@ -254,6 +256,33 @@ def finish_checks(doc: dict, state: dict, task: dict, rec: dict) -> str:
         return request_review(doc, state, task, base, excluded, owner_files)
     else:
         L.mark_done(state, task, "checks passed, review not required")
+    return record(doc, state, task)
+
+
+CHECKS_ONLY_FINDINGS = (
+    "This is a checks-only task (a checkpoint): the harness ran its checks before dispatching any "
+    "agent, and they failed. Fix the regressions without weakening the tests: do not skip, delete, "
+    "loosen or mark as expected to fail a test that fails, and do not change the checks; fix the "
+    "code (or a test that is itself wrong, saying why in your claim). The failing checks:")
+
+
+def finish_checks_only(doc: dict, state: dict, task: dict, rec: dict) -> str:
+    """The checks a checks_only task ran before any agent: passed, the task is done (no agent, no
+    review); failed, it goes to its agent as an ordinary attempt with the report as findings. The
+    checks-only run itself is not an attempt."""
+    st = state["tasks"][task["id"]]
+    st["checks_only"] = {"base": st["base_sha"], "result": "passed" if rec["all_ok"] else "failed",
+                         "time": L.now()}
+    if rec["all_ok"]:
+        L.mark_done(state, task, "checks only: the checks passed, no agent dispatched, no review")
+    else:
+        L.append_findings(task["id"], "harness", st["attempts"], f"{CHECKS_ONLY_FINDINGS}\n\n{rec['report']}")
+        st["status"] = "todo"
+        L.event(state, f"{task['id']} checks-only run failed: goes to {task['agent']} to fix the "
+                       "regressions (the run is not counted as an attempt)")
+        L.notify(f"{task['id']} checks failed", f"{task['title']}\nThe checks-only run failed; the "
+                 f"'{task['agent']}' fixes the regressions.\n{L.progress(state)}\n\n{L.tail(rec['report'], 10)}",
+                 level="all")
     return record(doc, state, task)
 
 

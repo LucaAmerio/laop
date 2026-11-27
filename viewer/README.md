@@ -34,7 +34,9 @@ Code in the repository, as in the desktop app (below). **Status** shows what run
 progress, the events and what needs you: every gate, question and provisional decision explained
 (what to check, the question, the resolver's recommendation, the challenger's verdict) with its
 `owner_tools.py` command to copy. **Questions** opens the decisions and the questions with their
-discussion (below). **Graph** is the dependency graph, left to right. **Logs** holds the tasks, the
+discussion (below). **Graph** is the dependency graph, left to right; a checks-only task
+(a checkpoint, laop 0.7) has a dashed inner ring and says whether its checks passed directly or went
+to its agent for a fix, as its badge does in the task table and in Status. **Logs** holds the tasks, the
 loop log, the commits and the files. In a
 window at least 900×600 the page does not scroll: the graph fits its box (wheel to zoom, drag to
 move) and long lists scroll inside their card; a narrower window scrolls as one page.

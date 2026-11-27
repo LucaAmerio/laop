@@ -118,6 +118,7 @@ def start(task: dict, attempt: int) -> str:
     checks = C.GLOBAL_CHECKS + task["acceptance"]
     rec = {"run_id": run_id, "task_id": task["id"], "attempt": attempt, "head": L.head_sha(),
            "acceptance": task["acceptance"], "n_checks": len(checks), "status": "starting",
+           "budget_min": task.get("check_budget_min"), "timeout_min": task.get("check_timeout_min"),
            "created": time.time(), "reports": []}
     with statefile.locked(RECORD):
         statefile.write(RECORD, rec)
@@ -164,6 +165,11 @@ def run(run_id: str) -> int:
     if not _update(run_id, lambda r: r.update(status="running", pid=os.getpid(), started=started)):
         return 1
     task = {"id": rec["task_id"], "acceptance": rec["acceptance"]}
+    # the task's own check time (tasks.json), recorded at start; absent: project.json's
+    if rec.get("budget_min"):
+        task["check_budget_min"] = rec["budget_min"]
+    if rec.get("timeout_min"):
+        task["check_timeout_min"] = rec["timeout_min"]
 
     def on_report(i: int, ok: bool, report: str) -> None:
         _update(run_id, lambda r: r["reports"].append({"i": i, "ok": ok, "time": time.time()}))

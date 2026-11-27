@@ -287,9 +287,10 @@ class Repo:
     def summary(self) -> dict:
         """The part of the snapshot the overview shows (no log, commits, files or task texts)."""
         snap = self.snapshot()
-        keep_st = ("status", "attempts", "block_type", "blocked_reason")
+        keep_st = ("status", "attempts", "block_type", "blocked_reason", "checks_only")
         tasks = [{"id": t["id"], "title": t.get("title", ""), "agent": t.get("agent"), "gate": t["gate"],
-                  "final": t.get("final", False), "waiting_on": t["waiting_on"], "holds_up": t["holds_up"],
+                  "final": t.get("final", False), "checks_only": bool(t.get("checks_only")),
+                  "waiting_on": t["waiting_on"], "holds_up": t["holds_up"],
                   "time": t.get("time", {}),
                   "st": {k: (v[:400] if isinstance(v, str) else v) for k, v in t["st"].items() if k in keep_st}}
                  for t in snap["tasks"]]
